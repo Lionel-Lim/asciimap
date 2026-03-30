@@ -1,46 +1,54 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import { type AsciiFrame, type FeatureGroups, type QualityMode } from '$lib/ascii';
+	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
 	import { createRasterAsciiRenderer } from '$lib/ascii/raster';
 	import {
+		CITY_LABEL_MAX_ZOOM,
+		DEFAULT_ROAD_DETAIL,
+		DEFAULT_WATER_DETAIL,
+		describeRoadDetail,
+		describeWaterDetail,
 		GRID_PRESETS,
 		INITIAL_VIEW,
 		LAYER_LABELS,
 		MAP_STYLE_URL,
 		QUALITY_SETTLE_MS,
-		QUERY_LAYER_PRESETS,
+		ROAD_DETAIL_RANGE,
+		WATER_DETAIL_RANGE,
+		resolveQueryLayers,
 		type LayerToggleKey,
 		type RenderPreference
 	} from '$lib/map/config';
+	import { buildCityLabelCommands } from '$lib/map/cityLabels';
 	import { projectMapFeatures } from '$lib/map/projection';
 	import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
 	import type { Map, MapGeoJSONFeature } from 'maplibre-gl';
 
-	const entityColors: Record<'background' | 'roads' | 'buildings' | 'water' | 'points', string> = {
+	const entityColors: Record<
+		'background' | 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'points',
+		string
+	> = {
 		background: 'rgba(0, 0, 0, 0)',
 		roads: '#f8f5ea',
+		bridges: '#ffd596',
 		buildings: '#f4ba67',
 		water: '#75d7ff',
+		cities: '#c7d7ff',
 		points: '#90f3d5'
 	};
 
-	const layerKeys: LayerToggleKey[] = ['roads', 'buildings', 'water'];
+	const layerKeys: LayerToggleKey[] = ['roads', 'bridges', 'buildings', 'water', 'cities'];
 	const qualityOptions = [
 		['auto', 'Auto'],
 		['performance', 'Performance'],
 		['quality', 'Quality']
 	] as const;
-	const renderStyleOptions = [
-		['mono', 'Monospace'],
-		['proportional', 'Proportional']
-	] as const;
 	const rasterRenderer = createRasterAsciiRenderer();
-	const glyphFontFamily = '"IBM Plex Mono", "Courier New", monospace';
-	const glyphWidthSamples = ['M', '#', '=', '+', '|', '/', '\\'];
-
-	type RenderStylePreference = 'mono' | 'proportional';
+	const glyphFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
+	const glyphWidthSamples = ['W', 'B', 'R', 'X', 'C', 'w', 'b', 'r', 'x', 'c'];
+	const cityLabelStroke = 'rgba(4, 8, 11, 0.84)';
 
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
@@ -54,16 +62,22 @@
 	let isLoaded = $state(false);
 	let interactionMode = $state<QualityMode>('moving');
 	let qualityPreference = $state<RenderPreference>('auto');
-	let renderStylePreference = $state<RenderStylePreference>('proportional');
+	let roadDetail = $state(DEFAULT_ROAD_DETAIL);
+	let waterDetail = $state(DEFAULT_WATER_DETAIL);
+	let showBackgroundMap = $state(true);
 	let layerState = $state<Record<LayerToggleKey, boolean>>({
 		roads: true,
+		bridges: true,
 		buildings: true,
-		water: true
+		water: true,
+		cities: true
 	});
 	let featureCounts = $state<Record<LayerToggleKey, number>>({
 		roads: 0,
+		bridges: 0,
 		buildings: 0,
-		water: 0
+		water: 0,
+		cities: 0
 	});
 	let fps = $state(0);
 	let lastRenderAt = 0;
@@ -82,7 +96,7 @@
 	}
 
 	function currentQueryLayers(): Record<LayerToggleKey, readonly string[]> {
-		return QUERY_LAYER_PRESETS[currentQualityMode()];
+		return resolveQueryLayers(currentQualityMode(), roadDetail);
 	}
 
 	function queueRender(): void {
@@ -126,8 +140,27 @@
 		queueRender();
 	}
 
-	function updateRenderStyle(nextPreference: RenderStylePreference): void {
-		renderStylePreference = nextPreference;
+	function updateRoadDetail(nextRoadDetail: number): void {
+		roadDetail = nextRoadDetail;
+		queueRender();
+	}
+
+	function updateWaterDetail(nextWaterDetail: number): void {
+		waterDetail = nextWaterDetail;
+		queueRender();
+	}
+
+	function updateBackgroundMap(checked: boolean): void {
+		showBackgroundMap = checked;
+		if (checked) {
+			window.requestAnimationFrame(() => {
+				map?.resize();
+				map?.triggerRepaint();
+				queueRender();
+			});
+			return;
+		}
+
 		queueRender();
 	}
 
@@ -181,13 +214,17 @@
 		const groups: FeatureGroups = {};
 		const rawGroups: Record<LayerToggleKey, MapGeoJSONFeature[]> = {
 			roads: [],
+			bridges: [],
 			buildings: [],
-			water: []
+			water: [],
+			cities: []
 		};
 		const nextFeatureCounts: Record<LayerToggleKey, number> = {
 			roads: 0,
+			bridges: 0,
 			buildings: 0,
-			water: 0
+			water: 0,
+			cities: 0
 		};
 		const queryLayers = currentQueryLayers();
 		const layerIdToBucket: Record<string, LayerToggleKey> = Object.fromEntries(
@@ -222,7 +259,13 @@
 			}
 
 			const projected = projectMapFeatures(activeMap, rawGroups[layerKey]);
-			groups[layerKey] = projected;
+			if (layerKey === 'bridges') {
+				groups.bridges = projected;
+			} else if (layerKey === 'cities') {
+				groups.cities = projected;
+			} else {
+				groups[layerKey] = projected;
+			}
 			nextFeatureCounts[layerKey] = projected.length;
 		}
 
@@ -303,6 +346,60 @@
 		}
 	}
 
+	function drawCityLabels(cityFeatures: readonly Feature[] | undefined): void {
+		if (
+			!cityFeatures ||
+			cityFeatures.length === 0 ||
+			!map ||
+			map.getZoom() > CITY_LABEL_MAX_ZOOM ||
+			!layerState.cities
+		) {
+			return;
+		}
+
+		const context = canvas.getContext('2d');
+		if (!context) {
+			return;
+		}
+
+		const labels = buildCityLabelCommands(cityFeatures, {
+			width: stage.clientWidth,
+			height: stage.clientHeight
+		});
+		if (labels.length === 0) {
+			return;
+		}
+
+		const pixelRatio = window.devicePixelRatio || 1;
+		context.save();
+		context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+		context.textAlign = 'center';
+		context.textBaseline = 'middle';
+		context.strokeStyle = cityLabelStroke;
+		context.lineJoin = 'round';
+		context.lineWidth = 3;
+
+		let currentFont = '';
+		let currentOpacity = 1;
+
+		for (const label of labels) {
+			if (label.font !== currentFont) {
+				context.font = label.font;
+				currentFont = label.font;
+			}
+			if (label.opacity !== currentOpacity) {
+				context.globalAlpha = label.opacity;
+				currentOpacity = label.opacity;
+			}
+
+			context.fillStyle = entityColors.cities;
+			context.strokeText(label.name, label.x, label.y);
+			context.fillText(label.name, label.x, label.y);
+		}
+
+		context.restore();
+	}
+
 	function renderFrame(): void {
 		if (!map || !stage || !canvas || !map.isStyleLoaded()) {
 			return;
@@ -321,17 +418,27 @@
 		let nextFrame = rasterRenderer.render({
 			viewport: { width: viewportWidth, height: viewportHeight },
 			quality: renderQuality,
-			layers,
+			layers: {
+				roads: layers.roads,
+				bridges: layers.bridges,
+				buildings: layers.buildings,
+				water: layers.water,
+				points: layers.points
+			},
 			config: {
-				grid: GRID_PRESETS[qualityPreference]
+				grid: GRID_PRESETS[qualityPreference],
+				detail: {
+					water: waterDetail
+				}
 			}
 		});
 
-		if (renderStylePreference === 'proportional') {
-			nextFrame = applyProportionalTypography(nextFrame);
-		}
+		nextFrame = applyProportionalTypography(nextFrame, {
+			waterDetail
+		});
 
 		drawFrame(nextFrame);
+		drawCityLabels(layers.cities);
 		frame = nextFrame;
 
 		const now = performance.now();
@@ -422,7 +529,7 @@
 <section class="prototype-shell">
 	<div class="stage-wrap">
 		<div bind:this={stage} class="map-stage">
-			<div bind:this={mapHost} class="map-host"></div>
+			<div bind:this={mapHost} class:map-hidden={!showBackgroundMap} class="map-host"></div>
 			<canvas bind:this={canvas} class="ascii-canvas"></canvas>
 			<div class="scanlines" aria-hidden="true"></div>
 
@@ -440,9 +547,11 @@
 		<p class="eyebrow">Milestone 1 Prototype</p>
 		<h1>Real-Time ASCII OSM Viewer</h1>
 		<p class="lede">
-			Live vector-tile features are sampled in the browser and redrawn as an ASCII field. Drag,
-			zoom, and toggle roads, buildings, or water independently, then flip between monospace and
-			proportional typography.
+			Live vector-tile features are sampled in the browser and redrawn as a proportional
+			letterfield. Drag, zoom, and toggle roads, bridges, buildings, water, or city labels
+			independently while stronger cells step up from <code>r</code>/<code>b</code>/<code>w</code>
+			to <code>R</code>/<code>B</code>/<code>W</code>. City names switch to measured label text at
+			broader zoom levels.
 		</p>
 
 		<section class="panel-section">
@@ -463,18 +572,62 @@
 		</section>
 
 		<section class="panel-section">
-			<h2>Typography</h2>
-			<div class="segmented-row">
-				{#each renderStyleOptions as [value, label] (value)}
-					<button
-						type="button"
-						class:active={renderStylePreference === value}
-						onclick={() => updateRenderStyle(value)}
-					>
-						{label}
-					</button>
-				{/each}
+			<h2>Road Detail</h2>
+			<div class="range-card">
+				<div class="range-head">
+					<span>{describeRoadDetail(roadDetail)}</span>
+					<strong>{roadDetail}%</strong>
+				</div>
+				<input
+					type="range"
+					min={ROAD_DETAIL_RANGE.min}
+					max={ROAD_DETAIL_RANGE.max}
+					step="1"
+					value={roadDetail}
+					oninput={(event) =>
+						updateRoadDetail(Number.parseInt((event.currentTarget as HTMLInputElement).value, 10))}
+				/>
+				<div class="range-scale" aria-hidden="true">
+					<span>Main</span>
+					<span>Branches</span>
+				</div>
 			</div>
+		</section>
+
+		<section class="panel-section">
+			<h2>Water Detail</h2>
+			<div class="range-card">
+				<div class="range-head">
+					<span>{describeWaterDetail(waterDetail)}</span>
+					<strong>{waterDetail}%</strong>
+				</div>
+				<input
+					type="range"
+					min={WATER_DETAIL_RANGE.min}
+					max={WATER_DETAIL_RANGE.max}
+					step="1"
+					value={waterDetail}
+					oninput={(event) =>
+						updateWaterDetail(Number.parseInt((event.currentTarget as HTMLInputElement).value, 10))}
+				/>
+				<div class="range-scale" aria-hidden="true">
+					<span>Light</span>
+					<span>Dense</span>
+				</div>
+			</div>
+		</section>
+
+		<section class="panel-section">
+			<h2>Display</h2>
+			<label class="toggle-row">
+				<span>Background Map</span>
+				<input
+					type="checkbox"
+					checked={showBackgroundMap}
+					onchange={(event) =>
+						updateBackgroundMap((event.currentTarget as HTMLInputElement).checked)}
+				/>
+			</label>
 		</section>
 
 		<section class="panel-section">
@@ -500,8 +653,16 @@
 					<dd>{currentQualityMode() === 'moving' ? 'Interaction grid' : 'Settled grid'}</dd>
 				</div>
 				<div>
-					<dt>Type</dt>
-					<dd>{renderStylePreference === 'mono' ? 'Monospace' : 'Proportional'}</dd>
+					<dt>Glyphs</dt>
+					<dd>R/r · X/x · B/b · W/w + city names</dd>
+				</div>
+				<div>
+					<dt>Road detail</dt>
+					<dd>{describeRoadDetail(roadDetail)}</dd>
+				</div>
+				<div>
+					<dt>Water detail</dt>
+					<dd>{describeWaterDetail(waterDetail)}</dd>
 				</div>
 				<div>
 					<dt>Grid</dt>
@@ -513,11 +674,21 @@
 				</div>
 				<div>
 					<dt>Features</dt>
-					<dd>{featureCounts.roads + featureCounts.buildings + featureCounts.water}</dd>
+					<dd>
+						{featureCounts.roads +
+							featureCounts.bridges +
+							featureCounts.buildings +
+							featureCounts.water +
+							featureCounts.cities}
+					</dd>
 				</div>
 				<div>
 					<dt>Roads</dt>
 					<dd>{featureCounts.roads}</dd>
+				</div>
+				<div>
+					<dt>Bridges</dt>
+					<dd>{featureCounts.bridges}</dd>
 				</div>
 				<div>
 					<dt>Buildings</dt>
@@ -526,6 +697,14 @@
 				<div>
 					<dt>Water</dt>
 					<dd>{featureCounts.water}</dd>
+				</div>
+				<div>
+					<dt>Cities</dt>
+					<dd>{featureCounts.cities}</dd>
+				</div>
+				<div>
+					<dt>Basemap</dt>
+					<dd>{showBackgroundMap ? 'Visible' : 'Hidden'}</dd>
 				</div>
 			</dl>
 		</section>
@@ -575,6 +754,11 @@
 	.map-host {
 		opacity: 0.16;
 		filter: grayscale(0.4) saturate(0.7) contrast(0.85);
+		transition: opacity 140ms ease;
+	}
+
+	.map-host.map-hidden {
+		opacity: 0;
 	}
 
 	.ascii-canvas {
@@ -680,6 +864,40 @@
 
 	.quality-row {
 		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+
+	.range-card {
+		display: grid;
+		gap: 0.7rem;
+		padding: 0.8rem 0.9rem;
+		border: 1px solid rgba(144, 243, 213, 0.12);
+		border-radius: 1.1rem;
+		background: rgba(255, 255, 255, 0.03);
+	}
+
+	.range-head,
+	.range-scale {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.range-head span,
+	.range-scale span {
+		font-size: 0.82rem;
+		color: rgba(237, 247, 242, 0.72);
+	}
+
+	.range-head strong {
+		font-size: 0.95rem;
+		color: #edf7f2;
+	}
+
+	.range-card input[type='range'] {
+		width: 100%;
+		margin: 0;
+		accent-color: #f4ba67;
 	}
 
 	.segmented-row button {

@@ -1,6 +1,6 @@
 export type QualityMode = 'moving' | 'settled';
 
-export type EntityKind = 'roads' | 'buildings' | 'water' | 'points';
+export type EntityKind = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'points';
 
 export type Point2D = readonly [number, number];
 
@@ -31,8 +31,10 @@ export interface Feature<TProperties extends Record<string, unknown> = Record<st
 
 export interface FeatureGroups {
 	roads?: readonly Feature[];
+	bridges?: readonly Feature[];
 	buildings?: readonly Feature[];
 	water?: readonly Feature[];
+	cities?: readonly Feature[];
 	points?: readonly Feature[];
 }
 
@@ -69,8 +71,10 @@ export interface DensityGlyphPalette {
 
 export interface AsciiPalettes {
 	roads: RoadGlyphPalette;
+	bridges: RoadGlyphPalette;
 	buildings: DensityGlyphPalette;
 	water: DensityGlyphPalette;
+	cities: readonly string[];
 	points: readonly string[];
 	background: string;
 }
@@ -78,6 +82,9 @@ export interface AsciiPalettes {
 export interface AsciiRendererConfig {
 	grid?: Partial<GridConfig>;
 	palettes?: Partial<AsciiPalettes>;
+	detail?: {
+		water?: number;
+	};
 }
 
 export interface AsciiFrameCell {

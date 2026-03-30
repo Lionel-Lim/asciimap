@@ -1,4 +1,4 @@
-import { defaultAsciiPalettes, mergeAsciiPalettes } from './palettes';
+import { mergeAsciiPalettes } from './palettes';
 import {
 	clamp01,
 	createGridContext,
@@ -27,11 +27,14 @@ interface CellState {
 	bestEntity: EntityKind | 'background';
 	coverage: number;
 	roadDirectionsMask: number;
+	bridgeDirectionsMask: number;
 	pointsUsed: number;
 }
 
 const priorities: Record<EntityKind, number> = {
-	points: 3,
+	points: 5,
+	cities: 4,
+	bridges: 3,
 	roads: 2,
 	buildings: 1,
 	water: 0
@@ -50,6 +53,7 @@ function createCellState(): CellState {
 		bestEntity: 'background',
 		coverage: 0,
 		roadDirectionsMask: 0,
+		bridgeDirectionsMask: 0,
 		pointsUsed: 0
 	};
 }
@@ -118,7 +122,7 @@ function samplePolygonFeature(
 function sampleLinearFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
-	kind: 'roads' | 'water',
+	kind: 'roads' | 'bridges' | 'water',
 	context: ReturnType<typeof createGridContext>
 ): void {
 	forEachLineSegment(feature, (segment) => {
@@ -142,6 +146,8 @@ function sampleLinearFeature(
 
 			if (kind === 'roads') {
 				cell.roadDirectionsMask |= roadDirectionBits[direction];
+			} else if (kind === 'bridges') {
+				cell.bridgeDirectionsMask |= roadDirectionBits[direction];
 			}
 
 			updateBestCell(cell, kind, 1);
@@ -152,6 +158,7 @@ function sampleLinearFeature(
 function samplePointFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
+	kind: 'points' | 'cities',
 	context: ReturnType<typeof createGridContext>
 ): void {
 	const points =
@@ -172,35 +179,54 @@ function samplePointFeature(
 			continue;
 		}
 
+		if (kind === 'cities') {
+			const layerId =
+				typeof feature.properties?.__layerId === 'string' ? feature.properties.__layerId : '';
+			const coverage =
+				layerId === 'label_city_capital'
+					? 1
+					: layerId === 'label_city'
+						? 0.92
+						: layerId === 'label_town'
+							? 0.72
+							: layerId === 'label_village'
+								? 0.58
+								: 0.46;
+			updateBestCell(cell, 'cities', coverage);
+			continue;
+		}
+
 		cell.pointsUsed += 1;
 		updateBestCell(cell, 'points', 1);
 	}
 }
 
-function chooseRoadGlyph(cell: CellState, palettes = defaultAsciiPalettes): string {
-	const mask = cell.roadDirectionsMask;
+function chooseLinearGlyph(
+	mask: number,
+	palette: ReturnType<typeof mergeAsciiPalettes>['roads']
+): string {
 	if (mask === 0) {
-		return palettes.roads.horizontal[0] ?? '-';
+		return palette.horizontal[0] ?? '-';
 	}
 
 	const hasMultipleDirections = mask & (mask - 1);
 	if (hasMultipleDirections) {
-		return palettes.roads.junction[0] ?? '+';
+		return palette.junction[0] ?? '+';
 	}
 
 	switch (mask) {
 		case 1:
-			return palettes.roads.horizontal[0] ?? '-';
+			return palette.horizontal[0] ?? '-';
 		case 2:
-			return palettes.roads.vertical[0] ?? '|';
+			return palette.vertical[0] ?? '|';
 		case 4:
-			return palettes.roads.diagonalSlash[0] ?? '/';
+			return palette.diagonalSlash[0] ?? '/';
 		case 8:
-			return palettes.roads.diagonalBackslash[0] ?? '\\';
+			return palette.diagonalBackslash[0] ?? '\\';
 		case 16:
-			return palettes.roads.junction[0] ?? '+';
+			return palette.junction[0] ?? '+';
 		default:
-			return palettes.roads.junction[0] ?? '+';
+			return palette.junction[0] ?? '+';
 	}
 }
 
@@ -220,6 +246,24 @@ function chooseDensityGlyph(
 	return palette[0];
 }
 
+function resolveRoadCoverage(cell: CellState): number {
+	const mask = cell.roadDirectionsMask;
+	if (mask === 0) {
+		return 0.58;
+	}
+
+	return mask & (mask - 1) ? 1 : 0.62;
+}
+
+function resolveBridgeCoverage(cell: CellState): number {
+	const mask = cell.bridgeDirectionsMask;
+	if (mask === 0) {
+		return 0.64;
+	}
+
+	return mask & (mask - 1) ? 1 : 0.7;
+}
+
 function finalizeCell(
 	cell: CellState,
 	palettes: ReturnType<typeof mergeAsciiPalettes>
@@ -234,9 +278,25 @@ function finalizeCell(
 
 	if (cell.bestEntity === 'roads') {
 		return {
-			char: chooseRoadGlyph(cell, palettes),
+			char: chooseLinearGlyph(cell.roadDirectionsMask, palettes.roads),
 			entity: 'roads',
-			coverage: 1
+			coverage: resolveRoadCoverage(cell)
+		};
+	}
+
+	if (cell.bestEntity === 'bridges') {
+		return {
+			char: chooseLinearGlyph(cell.bridgeDirectionsMask, palettes.bridges),
+			entity: 'bridges',
+			coverage: resolveBridgeCoverage(cell)
+		};
+	}
+
+	if (cell.bestEntity === 'cities') {
+		return {
+			char: cell.coverage >= 0.85 ? (palettes.cities[1] ?? 'C') : (palettes.cities[0] ?? 'c'),
+			entity: 'cities',
+			coverage: cell.coverage
 		};
 	}
 
@@ -280,11 +340,17 @@ export function renderAsciiFrame(input: AsciiRenderInput): AsciiFrame {
 	for (const feature of input.layers.buildings ?? []) {
 		samplePolygonFeature(stateGrid, feature, 'buildings', context);
 	}
+	for (const feature of input.layers.bridges ?? []) {
+		sampleLinearFeature(stateGrid, feature, 'bridges', context);
+	}
 	for (const feature of input.layers.roads ?? []) {
 		sampleLinearFeature(stateGrid, feature, 'roads', context);
 	}
+	for (const feature of input.layers.cities ?? []) {
+		samplePointFeature(stateGrid, feature, 'cities', context);
+	}
 	for (const feature of input.layers.points ?? []) {
-		samplePointFeature(stateGrid, feature, context);
+		samplePointFeature(stateGrid, feature, 'points', context);
 	}
 
 	const cells: AsciiFrameCell[] = [];
@@ -292,8 +358,10 @@ export function renderAsciiFrame(input: AsciiRenderInput): AsciiFrame {
 	const dominantCounts: Record<'background' | EntityKind, number> = {
 		background: 0,
 		roads: 0,
+		bridges: 0,
 		buildings: 0,
 		water: 0,
+		cities: 0,
 		points: 0
 	};
 

@@ -8,6 +8,14 @@ const roadPalette: RoadGlyphPalette = {
 	junction: ['+']
 };
 
+const bridgePalette: RoadGlyphPalette = {
+	horizontal: ['='],
+	vertical: ['!'],
+	diagonalSlash: ['/'],
+	diagonalBackslash: ['\\'],
+	junction: ['#']
+};
+
 const buildingPalette: DensityGlyphPalette = {
 	0: '.',
 	1: ':',
@@ -24,8 +32,10 @@ const waterPalette: DensityGlyphPalette = {
 
 export const defaultAsciiPalettes: AsciiPalettes = {
 	roads: roadPalette,
+	bridges: bridgePalette,
 	buildings: buildingPalette,
 	water: waterPalette,
+	cities: ['c', 'C'],
 	points: ['*', 'o', 'x'],
 	background: ' '
 };
@@ -37,8 +47,10 @@ export function mergeAsciiPalettes(overrides?: Partial<AsciiPalettes>): AsciiPal
 
 	return {
 		roads: { ...defaultAsciiPalettes.roads, ...overrides.roads },
+		bridges: { ...defaultAsciiPalettes.bridges, ...overrides.bridges },
 		buildings: { ...defaultAsciiPalettes.buildings, ...overrides.buildings },
 		water: { ...defaultAsciiPalettes.water, ...overrides.water },
+		cities: overrides.cities ?? defaultAsciiPalettes.cities,
 		points: overrides.points ?? defaultAsciiPalettes.points,
 		background: overrides.background ?? defaultAsciiPalettes.background
 	};
