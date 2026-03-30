@@ -12,16 +12,19 @@
 		describeWaterDetail,
 		GRID_PRESETS,
 		INITIAL_VIEW,
+		LANDMARK_LABEL_MIN_ZOOM,
 		LAYER_LABELS,
 		MAP_STYLE_URL,
 		QUALITY_SETTLE_MS,
 		ROAD_DETAIL_RANGE,
 		WATER_DETAIL_RANGE,
+		resolveEffectiveRoadDetail,
 		resolveQueryLayers,
 		type LayerToggleKey,
 		type RenderPreference
 	} from '$lib/map/config';
 	import { buildCityLabelCommands } from '$lib/map/cityLabels';
+	import { stampLandmarkLabels } from '$lib/map/landmarkLabels';
 	import { projectMapFeatures } from '$lib/map/projection';
 	import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
 	import type { Map, MapGeoJSONFeature } from 'maplibre-gl';
@@ -39,7 +42,14 @@
 		points: '#90f3d5'
 	};
 
-	const layerKeys: LayerToggleKey[] = ['roads', 'bridges', 'buildings', 'water', 'cities'];
+	const layerKeys: LayerToggleKey[] = [
+		'roads',
+		'bridges',
+		'buildings',
+		'water',
+		'cities',
+		'landmarks'
+	];
 	const qualityOptions = [
 		['auto', 'Auto'],
 		['performance', 'Performance'],
@@ -70,14 +80,16 @@
 		bridges: true,
 		buildings: true,
 		water: true,
-		cities: true
+		cities: true,
+		landmarks: true
 	});
 	let featureCounts = $state<Record<LayerToggleKey, number>>({
 		roads: 0,
 		bridges: 0,
 		buildings: 0,
 		water: 0,
-		cities: 0
+		cities: 0,
+		landmarks: 0
 	});
 	let fps = $state(0);
 	let lastRenderAt = 0;
@@ -95,8 +107,21 @@
 		return interactionMode;
 	}
 
+	function currentMapZoom(): number {
+		return map?.getZoom() ?? INITIAL_VIEW.zoom;
+	}
+
+	function cityLabelsVisibleAtZoom(zoom: number): boolean {
+		return layerState.cities && zoom <= CITY_LABEL_MAX_ZOOM;
+	}
+
+	function currentEffectiveRoadDetail(): number {
+		const zoom = currentMapZoom();
+		return resolveEffectiveRoadDetail(roadDetail, zoom, cityLabelsVisibleAtZoom(zoom));
+	}
+
 	function currentQueryLayers(): Record<LayerToggleKey, readonly string[]> {
-		return resolveQueryLayers(currentQualityMode(), roadDetail);
+		return resolveQueryLayers(currentQualityMode(), currentEffectiveRoadDetail());
 	}
 
 	function queueRender(): void {
@@ -217,14 +242,16 @@
 			bridges: [],
 			buildings: [],
 			water: [],
-			cities: []
+			cities: [],
+			landmarks: []
 		};
 		const nextFeatureCounts: Record<LayerToggleKey, number> = {
 			roads: 0,
 			bridges: 0,
 			buildings: 0,
 			water: 0,
-			cities: 0
+			cities: 0,
+			landmarks: 0
 		};
 		const queryLayers = currentQueryLayers();
 		const layerIdToBucket: Record<string, LayerToggleKey> = Object.fromEntries(
@@ -263,6 +290,8 @@
 				groups.bridges = projected;
 			} else if (layerKey === 'cities') {
 				groups.cities = projected;
+			} else if (layerKey === 'landmarks') {
+				groups.landmarks = projected;
 			} else {
 				groups[layerKey] = projected;
 			}
@@ -351,8 +380,7 @@
 			!cityFeatures ||
 			cityFeatures.length === 0 ||
 			!map ||
-			map.getZoom() > CITY_LABEL_MAX_ZOOM ||
-			!layerState.cities
+			!cityLabelsVisibleAtZoom(map.getZoom())
 		) {
 			return;
 		}
@@ -406,6 +434,7 @@
 		}
 
 		const renderQuality = currentQualityMode();
+		const mapZoom = map.getZoom();
 
 		const viewportWidth = stage.clientWidth;
 		const viewportHeight = stage.clientHeight;
@@ -429,6 +458,9 @@
 				grid: GRID_PRESETS[qualityPreference],
 				detail: {
 					water: waterDetail
+				},
+				view: {
+					zoom: mapZoom
 				}
 			}
 		});
@@ -436,6 +468,9 @@
 		nextFrame = applyProportionalTypography(nextFrame, {
 			waterDetail
 		});
+		if (layerState.landmarks && mapZoom >= LANDMARK_LABEL_MIN_ZOOM) {
+			nextFrame = stampLandmarkLabels(nextFrame, layers.landmarks, mapZoom);
+		}
 
 		drawFrame(nextFrame);
 		drawCityLabels(layers.cities);
@@ -551,7 +586,7 @@
 			letterfield. Drag, zoom, and toggle roads, bridges, buildings, water, or city labels
 			independently while stronger cells step up from <code>r</code>/<code>b</code>/<code>w</code>
 			to <code>R</code>/<code>B</code>/<code>W</code>. City names switch to measured label text at
-			broader zoom levels.
+			broader zoom levels, while landmark names stamp directly into the field at close zooms.
 		</p>
 
 		<section class="panel-section">
@@ -661,6 +696,10 @@
 					<dd>{describeRoadDetail(roadDetail)}</dd>
 				</div>
 				<div>
+					<dt>Effective roads</dt>
+					<dd>{describeRoadDetail(currentEffectiveRoadDetail())}</dd>
+				</div>
+				<div>
 					<dt>Water detail</dt>
 					<dd>{describeWaterDetail(waterDetail)}</dd>
 				</div>
@@ -679,7 +718,8 @@
 							featureCounts.bridges +
 							featureCounts.buildings +
 							featureCounts.water +
-							featureCounts.cities}
+							featureCounts.cities +
+							featureCounts.landmarks}
 					</dd>
 				</div>
 				<div>
@@ -701,6 +741,10 @@
 				<div>
 					<dt>Cities</dt>
 					<dd>{featureCounts.cities}</dd>
+				</div>
+				<div>
+					<dt>Landmarks</dt>
+					<dd>{featureCounts.landmarks}</dd>
 				</div>
 				<div>
 					<dt>Basemap</dt>

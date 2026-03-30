@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describeRoadDetail, describeWaterDetail, resolveQueryLayers } from './config';
+import {
+	describeRoadDetail,
+	describeWaterDetail,
+	resolveEffectiveRoadDetail,
+	resolveQueryLayers
+} from './config';
 
 describe('resolveQueryLayers', () => {
 	it('starts with only main roads at low detail', () => {
@@ -30,6 +35,7 @@ describe('resolveQueryLayers', () => {
 			'label_town',
 			'label_village'
 		]);
+		expect(layers.landmarks).toEqual(['label_other', 'poi_r1', 'poi_r7', 'poi_r20']);
 	});
 });
 
@@ -48,5 +54,16 @@ describe('describeWaterDetail', () => {
 		expect(describeWaterDetail(45)).toBe('Balanced');
 		expect(describeWaterDetail(70)).toBe('Solid');
 		expect(describeWaterDetail(100)).toBe('Dense');
+	});
+});
+
+describe('resolveEffectiveRoadDetail', () => {
+	it('suppresses minor roads at broader zooms when city labels are visible', () => {
+		expect(resolveEffectiveRoadDetail(40, 12, true)).toBe(6);
+	});
+
+	it('restores the requested road density at closer zooms', () => {
+		expect(resolveEffectiveRoadDetail(40, 16, false)).toBe(40);
+		expect(resolveEffectiveRoadDetail(80, 14.5, false)).toBe(62);
 	});
 });

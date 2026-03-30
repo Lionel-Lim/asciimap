@@ -31,15 +31,6 @@ interface CellState {
 	pointsUsed: number;
 }
 
-const priorities: Record<EntityKind, number> = {
-	points: 5,
-	cities: 4,
-	bridges: 3,
-	roads: 2,
-	buildings: 1,
-	water: 0
-};
-
 const roadDirectionBits: Record<DirectionBucket, number> = {
 	horizontal: 1,
 	vertical: 2,
@@ -65,7 +56,26 @@ function getGridConfig(input: AsciiRenderInput['config']) {
 	};
 }
 
-function updateBestCell(state: CellState, kind: EntityKind, coverage: number): void {
+function resolvePriorities(input: AsciiRenderInput): Record<EntityKind, number> {
+	const zoom = input.config?.view?.zoom ?? 0;
+	const buildingDominant = zoom >= 15;
+
+	return {
+		points: 5,
+		cities: 4,
+		bridges: 3,
+		roads: buildingDominant ? 1 : 2,
+		buildings: buildingDominant ? 2 : 1,
+		water: 0
+	};
+}
+
+function updateBestCell(
+	state: CellState,
+	kind: EntityKind,
+	coverage: number,
+	priorities: Record<EntityKind, number>
+): void {
 	if (coverage <= 0) {
 		return;
 	}
@@ -83,7 +93,8 @@ function samplePolygonFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
 	kind: EntityKind,
-	context: ReturnType<typeof createGridContext>
+	context: ReturnType<typeof createGridContext>,
+	priorities: Record<EntityKind, number>
 ): void {
 	forEachPolygonPart(feature, (polygon) => {
 		const bounds = polygonBounds(polygon);
@@ -112,7 +123,7 @@ function samplePolygonFeature(
 
 				const cell = stateGrid[row]?.[column];
 				if (cell) {
-					updateBestCell(cell, kind, coverage);
+					updateBestCell(cell, kind, coverage, priorities);
 				}
 			}
 		}
@@ -123,7 +134,8 @@ function sampleLinearFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
 	kind: 'roads' | 'bridges' | 'water',
-	context: ReturnType<typeof createGridContext>
+	context: ReturnType<typeof createGridContext>,
+	priorities: Record<EntityKind, number>
 ): void {
 	forEachLineSegment(feature, (segment) => {
 		const segmentBounds = lineBounds(segment.start, segment.end);
@@ -150,7 +162,7 @@ function sampleLinearFeature(
 				cell.bridgeDirectionsMask |= roadDirectionBits[direction];
 			}
 
-			updateBestCell(cell, kind, 1);
+			updateBestCell(cell, kind, 1, priorities);
 		});
 	});
 }
@@ -159,7 +171,8 @@ function samplePointFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
 	kind: 'points' | 'cities',
-	context: ReturnType<typeof createGridContext>
+	context: ReturnType<typeof createGridContext>,
+	priorities: Record<EntityKind, number>
 ): void {
 	const points =
 		feature.geometry.type === 'Point'
@@ -192,12 +205,12 @@ function samplePointFeature(
 							: layerId === 'label_village'
 								? 0.58
 								: 0.46;
-			updateBestCell(cell, 'cities', coverage);
+			updateBestCell(cell, 'cities', coverage, priorities);
 			continue;
 		}
 
 		cell.pointsUsed += 1;
-		updateBestCell(cell, 'points', 1);
+		updateBestCell(cell, 'points', 1, priorities);
 	}
 }
 
@@ -327,6 +340,7 @@ function finalizeCell(
 export function renderAsciiFrame(input: AsciiRenderInput): AsciiFrame {
 	const gridConfig = getGridConfig(input.config);
 	const palettes = mergeAsciiPalettes(input.config?.palettes);
+	const priorities = resolvePriorities(input);
 	const size = resolveGridSize(input.viewport, input.quality, gridConfig);
 	const context = createGridContext(input.viewport, size);
 	const stateGrid: CellState[][] = Array.from({ length: size.rows }, () =>
@@ -334,23 +348,23 @@ export function renderAsciiFrame(input: AsciiRenderInput): AsciiFrame {
 	);
 
 	for (const feature of input.layers.water ?? []) {
-		samplePolygonFeature(stateGrid, feature, 'water', context);
-		sampleLinearFeature(stateGrid, feature, 'water', context);
+		samplePolygonFeature(stateGrid, feature, 'water', context, priorities);
+		sampleLinearFeature(stateGrid, feature, 'water', context, priorities);
 	}
 	for (const feature of input.layers.buildings ?? []) {
-		samplePolygonFeature(stateGrid, feature, 'buildings', context);
+		samplePolygonFeature(stateGrid, feature, 'buildings', context, priorities);
 	}
 	for (const feature of input.layers.bridges ?? []) {
-		sampleLinearFeature(stateGrid, feature, 'bridges', context);
+		sampleLinearFeature(stateGrid, feature, 'bridges', context, priorities);
 	}
 	for (const feature of input.layers.roads ?? []) {
-		sampleLinearFeature(stateGrid, feature, 'roads', context);
+		sampleLinearFeature(stateGrid, feature, 'roads', context, priorities);
 	}
 	for (const feature of input.layers.cities ?? []) {
-		samplePointFeature(stateGrid, feature, 'cities', context);
+		samplePointFeature(stateGrid, feature, 'cities', context, priorities);
 	}
 	for (const feature of input.layers.points ?? []) {
-		samplePointFeature(stateGrid, feature, 'points', context);
+		samplePointFeature(stateGrid, feature, 'points', context, priorities);
 	}
 
 	const cells: AsciiFrameCell[] = [];

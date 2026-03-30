@@ -43,15 +43,6 @@ interface RasterBuffers {
 	supersample: number;
 }
 
-const priorities: Record<EntityKind, number> = {
-	points: 5,
-	cities: 4,
-	bridges: 3,
-	roads: 2,
-	buildings: 1,
-	water: 0
-};
-
 const roadDirectionBits: Record<DirectionBucket, number> = {
 	horizontal: 1,
 	vertical: 2,
@@ -94,7 +85,26 @@ function amplifyWaterCoverage(coverage: number, waterDetail: number): number {
 	return clamp01(coverage * (0.88 + normalizedDetail * 0.5));
 }
 
-function updateBestCell(state: CellState, kind: EntityKind, coverage: number): void {
+function resolvePriorities(input: AsciiRenderInput): Record<EntityKind, number> {
+	const zoom = input.config?.view?.zoom ?? 0;
+	const buildingDominant = zoom >= 15;
+
+	return {
+		points: 5,
+		cities: 4,
+		bridges: 3,
+		roads: buildingDominant ? 1 : 2,
+		buildings: buildingDominant ? 2 : 1,
+		water: 0
+	};
+}
+
+function updateBestCell(
+	state: CellState,
+	kind: EntityKind,
+	coverage: number,
+	priorities: Record<EntityKind, number>
+): void {
 	if (coverage <= 0) {
 		return;
 	}
@@ -454,7 +464,8 @@ function sampleRoadLikeFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
 	kind: 'roads' | 'bridges',
-	context: ReturnType<typeof createGridContext>
+	context: ReturnType<typeof createGridContext>,
+	priorities: Record<EntityKind, number>
 ): void {
 	const lines =
 		feature.geometry.type === 'LineString'
@@ -495,7 +506,7 @@ function sampleRoadLikeFeature(
 				} else {
 					cell.roadDirectionsMask |= roadDirectionBits[direction];
 				}
-				updateBestCell(cell, kind, 1);
+				updateBestCell(cell, kind, 1, priorities);
 			}
 		}
 	}
@@ -505,7 +516,8 @@ function samplePointFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
 	kind: 'points' | 'cities',
-	context: ReturnType<typeof createGridContext>
+	context: ReturnType<typeof createGridContext>,
+	priorities: Record<EntityKind, number>
 ): void {
 	const points =
 		feature.geometry.type === 'Point'
@@ -526,12 +538,12 @@ function samplePointFeature(
 		}
 
 		if (kind === 'cities') {
-			updateBestCell(cell, 'cities', resolveCityCoverage(feature));
+			updateBestCell(cell, 'cities', resolveCityCoverage(feature), priorities);
 			continue;
 		}
 
 		cell.pointsUsed += 1;
-		updateBestCell(cell, 'points', 1);
+		updateBestCell(cell, 'points', 1, priorities);
 	}
 }
 
@@ -542,6 +554,7 @@ export function createRasterAsciiRenderer() {
 		render(input: AsciiRenderInput): AsciiFrame {
 			const gridConfig = getGridConfig(input.config);
 			const palettes = mergeAsciiPalettes(input.config?.palettes);
+			const priorities = resolvePriorities(input);
 			const size = resolveGridSize(input.viewport, input.quality, gridConfig);
 			const context = createGridContext(input.viewport, size);
 			const supersample = input.quality === 'moving' ? 2 : 4;
@@ -576,25 +589,25 @@ export function createRasterAsciiRenderer() {
 						continue;
 					}
 					const index = row * size.columns + column;
-					updateBestCell(cell, 'water', waterCoverage[index] ?? 0);
-					updateBestCell(cell, 'buildings', buildingCoverage[index] ?? 0);
+					updateBestCell(cell, 'water', waterCoverage[index] ?? 0, priorities);
+					updateBestCell(cell, 'buildings', buildingCoverage[index] ?? 0, priorities);
 				}
 			}
 
 			for (const feature of input.layers.bridges ?? []) {
-				sampleRoadLikeFeature(stateGrid, feature, 'bridges', context);
+				sampleRoadLikeFeature(stateGrid, feature, 'bridges', context, priorities);
 			}
 
 			for (const feature of input.layers.roads ?? []) {
-				sampleRoadLikeFeature(stateGrid, feature, 'roads', context);
+				sampleRoadLikeFeature(stateGrid, feature, 'roads', context, priorities);
 			}
 
 			for (const feature of input.layers.cities ?? []) {
-				samplePointFeature(stateGrid, feature, 'cities', context);
+				samplePointFeature(stateGrid, feature, 'cities', context, priorities);
 			}
 
 			for (const feature of input.layers.points ?? []) {
-				samplePointFeature(stateGrid, feature, 'points', context);
+				samplePointFeature(stateGrid, feature, 'points', context, priorities);
 			}
 
 			const cells: AsciiFrameCell[] = [];

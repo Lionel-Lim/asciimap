@@ -92,6 +92,39 @@ describe('renderAsciiFrame', () => {
 		expect(frame.rows.some((line) => line.includes('#'))).toBe(true);
 	});
 
+	it('keeps building massing at close zoom instead of letting roads replace it', () => {
+		const frame = renderAsciiFrame({
+			viewport,
+			quality: 'settled',
+			layers: {
+				...fullViewportPolygon(),
+				roads: [
+					{
+						geometry: {
+							type: 'LineString',
+							coordinates: [
+								[0, 60],
+								[120, 60]
+							]
+						}
+					}
+				]
+			},
+			config: {
+				grid: {
+					moving: { columns: 6 },
+					settled: { columns: 6 }
+				},
+				view: {
+					zoom: 15.2
+				}
+			}
+		});
+
+		expect(frame.rows[3]).not.toContain('-');
+		expect(frame.rows[3]).toContain('#');
+	});
+
 	it('renders points as stamps', () => {
 		const frame = renderAsciiFrame({
 			viewport,

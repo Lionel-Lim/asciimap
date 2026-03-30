@@ -35,6 +35,7 @@ export interface FeatureGroups {
 	buildings?: readonly Feature[];
 	water?: readonly Feature[];
 	cities?: readonly Feature[];
+	landmarks?: readonly Feature[];
 	points?: readonly Feature[];
 }
 
@@ -84,6 +85,9 @@ export interface AsciiRendererConfig {
 	palettes?: Partial<AsciiPalettes>;
 	detail?: {
 		water?: number;
+	};
+	view?: {
+		zoom?: number;
 	};
 }
 

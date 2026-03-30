@@ -1,7 +1,12 @@
-export type LayerToggleKey = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities';
+export type LayerToggleKey = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'landmarks';
 export type RenderPreference = 'auto' | 'performance' | 'quality';
 export type RoadDetailLabel = 'Main roads' | 'Balanced' | 'Branches' | 'All branches';
 export type WaterDetailLabel = 'Light' | 'Balanced' | 'Solid' | 'Dense';
+
+interface ZoomStop {
+	zoom: number;
+	weight: number;
+}
 
 export interface GridPresetConfig {
 	moving: { columns: number };
@@ -19,13 +24,15 @@ export const INITIAL_VIEW = {
 
 export const QUALITY_SETTLE_MS = 180;
 export const CITY_LABEL_MAX_ZOOM = 12;
+export const LANDMARK_LABEL_MIN_ZOOM = 14.2;
 
 export const LAYER_LABELS: Record<LayerToggleKey, string> = {
 	roads: 'Roads',
 	bridges: 'Bridges',
 	buildings: 'Buildings',
 	water: 'Water',
-	cities: 'Cities'
+	cities: 'Cities',
+	landmarks: 'Landmarks'
 };
 
 const ROAD_LAYER_PRESETS = {
@@ -113,8 +120,9 @@ const BRIDGE_LAYER_PRESETS = {
 const STATIC_QUERY_LAYERS = {
 	buildings: ['building'],
 	water: ['water', 'waterway_river', 'waterway_other'],
-	cities: ['label_city_capital', 'label_city', 'label_town', 'label_village']
-} as const satisfies Record<'buildings' | 'water' | 'cities', readonly string[]>;
+	cities: ['label_city_capital', 'label_city', 'label_town', 'label_village'],
+	landmarks: ['label_other', 'poi_r1', 'poi_r7', 'poi_r20']
+} as const satisfies Record<'buildings' | 'water' | 'cities' | 'landmarks', readonly string[]>;
 
 export const DEFAULT_ROAD_DETAIL = 40;
 export const ROAD_DETAIL_RANGE = {
@@ -127,6 +135,38 @@ export const WATER_DETAIL_RANGE = {
 	min: 0,
 	max: 100
 } as const;
+
+const ROAD_DETAIL_ZOOM_STOPS: readonly ZoomStop[] = [
+	{ zoom: 10, weight: 0.12 },
+	{ zoom: 11, weight: 0.16 },
+	{ zoom: 12, weight: 0.22 },
+	{ zoom: 13, weight: 0.42 },
+	{ zoom: 14, weight: 0.68 },
+	{ zoom: 15, weight: 0.86 },
+	{ zoom: 16, weight: 1 }
+];
+
+function clampDetail(value: number): number {
+	return Math.max(ROAD_DETAIL_RANGE.min, Math.min(ROAD_DETAIL_RANGE.max, value));
+}
+
+function interpolateWeight(zoom: number, stops: readonly ZoomStop[]): number {
+	if (zoom <= stops[0]!.zoom) {
+		return stops[0]!.weight;
+	}
+
+	for (let index = 1; index < stops.length; index += 1) {
+		const current = stops[index]!;
+		const previous = stops[index - 1]!;
+		if (zoom <= current.zoom) {
+			const span = current.zoom - previous.zoom;
+			const t = span === 0 ? 0 : (zoom - previous.zoom) / span;
+			return previous.weight + (current.weight - previous.weight) * t;
+		}
+	}
+
+	return stops[stops.length - 1]!.weight;
+}
 
 function resolveRoadDetailLevel(quality: 'moving' | 'settled', roadDetail: number): 0 | 1 | 2 | 3 {
 	const clampedDetail = Math.max(
@@ -160,10 +200,7 @@ function resolveRoadDetailLevel(quality: 'moving' | 'settled', roadDetail: numbe
 }
 
 export function describeRoadDetail(roadDetail: number): RoadDetailLabel {
-	const clampedDetail = Math.max(
-		ROAD_DETAIL_RANGE.min,
-		Math.min(ROAD_DETAIL_RANGE.max, roadDetail)
-	);
+	const clampedDetail = clampDetail(roadDetail);
 	if (clampedDetail >= 85) {
 		return 'All branches';
 	}
@@ -193,6 +230,18 @@ export function describeWaterDetail(waterDetail: number): WaterDetailLabel {
 	return 'Light';
 }
 
+export function resolveEffectiveRoadDetail(
+	roadDetail: number,
+	zoom: number,
+	cityLabelsVisible: boolean
+): number {
+	const clampedDetail = clampDetail(roadDetail);
+	const zoomWeight = interpolateWeight(zoom, ROAD_DETAIL_ZOOM_STOPS);
+	const labelPenalty = cityLabelsVisible ? 0.72 : 1;
+
+	return clampDetail(Math.round(clampedDetail * zoomWeight * labelPenalty));
+}
+
 export function resolveQueryLayers(
 	quality: 'moving' | 'settled',
 	roadDetail: number
@@ -204,7 +253,8 @@ export function resolveQueryLayers(
 		bridges: BRIDGE_LAYER_PRESETS[quality].bridges[roadDetailLevel],
 		buildings: STATIC_QUERY_LAYERS.buildings,
 		water: STATIC_QUERY_LAYERS.water,
-		cities: STATIC_QUERY_LAYERS.cities
+		cities: STATIC_QUERY_LAYERS.cities,
+		landmarks: STATIC_QUERY_LAYERS.landmarks
 	};
 }
 
