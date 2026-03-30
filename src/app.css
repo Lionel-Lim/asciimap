@@ -1,0 +1,48 @@
+:root {
+	color-scheme: dark;
+	font-family: 'IBM Plex Mono', 'Courier New', monospace;
+	--ink-950: #04080b;
+	--ink-900: #071017;
+	--ink-800: #0d1d25;
+	--line: rgba(140, 231, 208, 0.24);
+	--panel: rgba(8, 20, 25, 0.82);
+	--panel-strong: rgba(7, 16, 20, 0.94);
+	--copy: #edf7f2;
+	--muted: #9db5b4;
+	--roads: #f8f5ea;
+	--buildings: #f4ba67;
+	--water: #75d7ff;
+	--accent: #90f3d5;
+	--shadow: rgba(0, 0, 0, 0.36);
+	background:
+		radial-gradient(circle at 0% 0%, rgba(144, 243, 213, 0.18), transparent 28%),
+		radial-gradient(circle at 100% 0%, rgba(117, 215, 255, 0.16), transparent 24%),
+		linear-gradient(180deg, #071017 0%, #061018 45%, #03070a 100%);
+	color: var(--copy);
+}
+
+html,
+body {
+	min-height: 100%;
+	margin: 0;
+	background: var(--ink-950);
+}
+
+body {
+	min-height: 100vh;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+	font: inherit;
+}
+
+button {
+	color: inherit;
+}
