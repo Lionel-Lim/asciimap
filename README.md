@@ -12,10 +12,10 @@
 `asciimap` is a hobby project for experimenting with ASCII cartography in the browser.
 
 
-
 https://github.com/user-attachments/assets/aab0f1fb-d16a-45c0-9003-873fa331fd2c
 
 
+Try the live demo at [https://lionel-lim.github.io/asciimap/](https://lionel-lim.github.io/asciimap/).
 
 ## Stack
 
