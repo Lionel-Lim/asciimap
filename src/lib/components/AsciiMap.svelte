@@ -107,6 +107,18 @@
 		'c'
 	];
 	const emptyFeatures: readonly Feature[] = [];
+	const layerGlyphs: Record<LayerToggleKey | 'aircraft', { color: string; glyph: string }> = {
+		roads: { color: entityColors.roads, glyph: 'R / r' },
+		bridges: { color: entityColors.bridges, glyph: 'X / x' },
+		buildings: { color: entityColors.buildings, glyph: 'B / b' },
+		water: { color: entityColors.water, glyph: 'W / w' },
+		greens: { color: entityColors.greens, glyph: 'G / g' },
+		rails: { color: entityColors.rails, glyph: 'R / r' },
+		tunnels: { color: entityColors.tunnels, glyph: 'U / u' },
+		cities: { color: entityColors.cities, glyph: 'Aa' },
+		landmarks: { color: entityColors.points, glyph: 'Aa' },
+		aircraft: { color: entityColors.points, glyph: 'aAa' }
+	};
 	type QueryPlan = {
 		key: string;
 		activeLayerIds: string[];
@@ -1247,7 +1259,12 @@
 			<div class="toggle-grid">
 				{#each layerKeys as layerKey (layerKey)}
 					<label class="toggle-row">
-						<span>{LAYER_LABELS[layerKey]}</span>
+						<span class="layer-copy">
+							<span class="layer-label">{LAYER_LABELS[layerKey]}</span>
+							<span class="layer-glyph" style={`--layer-color:${layerGlyphs[layerKey].color};`}>
+								{layerGlyphs[layerKey].glyph}
+							</span>
+						</span>
 						<input
 							type="checkbox"
 							checked={layerState[layerKey]}
@@ -1257,7 +1274,12 @@
 					</label>
 				{/each}
 				<label class="toggle-row">
-					<span>Aircraft</span>
+					<span class="layer-copy">
+						<span class="layer-label">Aircraft</span>
+						<span class="layer-glyph" style={`--layer-color:${layerGlyphs.aircraft.color};`}>
+							{layerGlyphs.aircraft.glyph}
+						</span>
+					</span>
 					<input
 						type="checkbox"
 						checked={showAircraft}
@@ -1349,7 +1371,7 @@
 				</div>
 				<div>
 					<dt>Glyphs</dt>
-					<dd>R/r · X/x · B/b · W/w · G/g · M/m · T/t · aAa + labels</dd>
+					<dd>R/r · X/x · B/b · W/w · G/g · R/r · U/u · aAa + labels</dd>
 				</div>
 				<div>
 					<dt>Road detail</dt>
@@ -1670,8 +1692,33 @@
 		background: rgba(255, 255, 255, 0.03);
 	}
 
-	.toggle-row span {
+	.layer-copy {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		min-width: 0;
+	}
+
+	.layer-label {
 		font-size: 0.9rem;
+		color: #edf7f2;
+	}
+
+	.layer-glyph {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.18rem 0.48rem;
+		border: 1px solid color-mix(in srgb, var(--layer-color) 26%, rgba(255, 255, 255, 0.08));
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.03);
+		color: var(--layer-color);
+		font-family: 'IBM Plex Mono', 'Courier New', monospace;
+		font-size: 0.74rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		line-height: 1;
+		white-space: nowrap;
 	}
 
 	.toggle-row input {
