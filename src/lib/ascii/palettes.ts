@@ -17,19 +17,19 @@ const bridgePalette: RoadGlyphPalette = {
 };
 
 const railPalette: RoadGlyphPalette = {
-	horizontal: [':'],
-	vertical: ['!'],
-	diagonalSlash: ['/'],
-	diagonalBackslash: ['\\'],
-	junction: ['*']
+	horizontal: ['r'],
+	vertical: ['r'],
+	diagonalSlash: ['r'],
+	diagonalBackslash: ['r'],
+	junction: ['R']
 };
 
 const tunnelPalette: RoadGlyphPalette = {
-	horizontal: ['_'],
-	vertical: [':'],
-	diagonalSlash: ['/'],
-	diagonalBackslash: ['\\'],
-	junction: [';']
+	horizontal: ['u'],
+	vertical: ['u'],
+	diagonalSlash: ['u'],
+	diagonalBackslash: ['u'],
+	junction: ['U']
 };
 
 const buildingPalette: DensityGlyphPalette = {

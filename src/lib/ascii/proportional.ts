@@ -124,8 +124,8 @@ const typographySpecs: Record<ProportionalEntity, EntityTypographySpec> = {
 	rails: {
 		family: 'Georgia, Palatino, "Times New Roman", serif',
 		glyphs: {
-			edge: 'm',
-			core: 'M'
+			edge: 'r',
+			core: 'R'
 		},
 		weights: [500, 700],
 		styles: ['normal'],
@@ -139,8 +139,8 @@ const typographySpecs: Record<ProportionalEntity, EntityTypographySpec> = {
 	tunnels: {
 		family: 'Georgia, Palatino, "Times New Roman", serif',
 		glyphs: {
-			edge: 't',
-			core: 'T'
+			edge: 'u',
+			core: 'U'
 		},
 		weights: [500, 700],
 		styles: ['normal', 'italic'],

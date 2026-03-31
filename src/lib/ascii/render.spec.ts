@@ -194,7 +194,7 @@ describe('renderAsciiFrame', () => {
 			}
 		});
 
-		expect(frame.rows[3]).toContain(':');
+		expect(frame.rows[3]).toContain('r');
 		expect(frame.dominantCounts.rails).toBeGreaterThan(0);
 	});
 
@@ -223,7 +223,7 @@ describe('renderAsciiFrame', () => {
 			}
 		});
 
-		expect(frame.rows[3]).toContain('_');
+		expect(frame.rows[3]).toContain('u');
 		expect(frame.dominantCounts.tunnels).toBeGreaterThan(0);
 	});
 
