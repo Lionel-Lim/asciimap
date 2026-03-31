@@ -1,4 +1,5 @@
 import type { Feature } from '$lib/ascii';
+import { acceptNonOverlapping } from './labelCollision';
 import { measureTextBlock } from './textMeasure';
 const cityLabelFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
 
@@ -86,18 +87,6 @@ function readPoint(feature: Feature): readonly [number, number] | null {
 	return null;
 }
 
-function intersects(
-	left: { left: number; right: number; top: number; bottom: number },
-	right: { left: number; right: number; top: number; bottom: number }
-): boolean {
-	return !(
-		left.right < right.left ||
-		left.left > right.right ||
-		left.bottom < right.top ||
-		left.top > right.bottom
-	);
-}
-
 export function buildCityLabelCommands(
 	features: readonly Feature[],
 	viewport: { width: number; height: number }
@@ -137,23 +126,10 @@ export function buildCityLabelCommands(
 		(left, right) => right.priority - left.priority || left.name.length - right.name.length
 	);
 
-	const accepted: CityLabelCommand[] = [];
-	const occupied: Array<{ left: number; right: number; top: number; bottom: number }> = [];
-
-	for (const candidate of candidates) {
-		const bounds = {
-			left: candidate.x - candidate.width / 2 - 6,
-			right: candidate.x + candidate.width / 2 + 6,
-			top: candidate.y - candidate.height / 2 - 3,
-			bottom: candidate.y + candidate.height / 2 + 3
-		};
-		if (occupied.some((existing) => intersects(bounds, existing))) {
-			continue;
-		}
-
-		accepted.push(candidate);
-		occupied.push(bounds);
-	}
-
-	return accepted;
+	return acceptNonOverlapping(candidates, (candidate) => ({
+		left: candidate.x - candidate.width / 2 - 6,
+		right: candidate.x + candidate.width / 2 + 6,
+		top: candidate.y - candidate.height / 2 - 3,
+		bottom: candidate.y + candidate.height / 2 + 3
+	}));
 }
