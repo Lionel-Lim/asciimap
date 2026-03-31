@@ -1,10 +1,8 @@
-import { prepareWithSegments, walkLineRanges } from '@chenglou/pretext';
-import type { AsciiFrame, AsciiFrameCell, Feature } from '$lib/ascii';
+import type { Feature } from '$lib/ascii';
+import { measureTextBlock } from './textMeasure';
 
-const LABEL_MEASURE_WIDTH = 100_000;
 const MAX_NAME_LENGTH = 22;
 const landmarkFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
-const landmarkWidthCache = new Map<string, number>();
 
 interface LandmarkLabelSpec {
 	fontSizeMultiplier: number;
@@ -14,14 +12,16 @@ interface LandmarkLabelSpec {
 	weight: number;
 }
 
-interface LandmarkLabelCommand {
+export interface LandmarkLabelCommand {
 	font: string;
+	height: number;
+	key: string;
 	name: string;
 	opacity: number;
 	priority: number;
-	row: number;
-	startColumn: number;
-	widthInCells: number;
+	width: number;
+	x: number;
+	y: number;
 }
 
 const landmarkLabelSpecs: Record<string, LandmarkLabelSpec> = {
@@ -54,22 +54,6 @@ const landmarkLabelSpecs: Record<string, LandmarkLabelSpec> = {
 		weight: 600
 	}
 };
-
-function measureLabelWidth(text: string, font: string): number {
-	const cacheKey = `${font}\u0000${text}`;
-	const cached = landmarkWidthCache.get(cacheKey);
-	if (cached !== undefined) {
-		return cached;
-	}
-
-	const prepared = prepareWithSegments(text, font);
-	let width = 0;
-	walkLineRanges(prepared, LABEL_MEASURE_WIDTH, (line) => {
-		width = Math.max(width, line.width);
-	});
-	landmarkWidthCache.set(cacheKey, width);
-	return width;
-}
 
 function readLabelName(feature: Feature): string | null {
 	const properties = feature.properties;
@@ -108,27 +92,25 @@ function readPoint(feature: Feature): readonly [number, number] | null {
 	return null;
 }
 
-function buildRows(cells: readonly AsciiFrameCell[], cols: number, rowCount: number): string[] {
-	const rows: string[] = [];
-	for (let row = 0; row < rowCount; row += 1) {
-		const start = row * cols;
-		rows.push(
-			cells
-				.slice(start, start + cols)
-				.map((cell) => cell.char)
-				.join('')
-		);
-	}
-	return rows;
+function intersects(
+	left: { left: number; right: number; top: number; bottom: number },
+	right: { left: number; right: number; top: number; bottom: number }
+): boolean {
+	return !(
+		left.right < right.left ||
+		left.left > right.right ||
+		left.bottom < right.top ||
+		left.top > right.bottom
+	);
 }
 
-export function stampLandmarkLabels(
-	frame: AsciiFrame,
+export function buildLandmarkLabelCommands(
 	features: readonly Feature[] | undefined,
+	viewport: { width: number; height: number },
 	zoom: number
-): AsciiFrame {
-	if (!frame.cells || !features || features.length === 0) {
-		return frame;
+): LandmarkLabelCommand[] {
+	if (!features || features.length === 0) {
+		return [];
 	}
 
 	const candidates: LandmarkLabelCommand[] = [];
@@ -145,33 +127,28 @@ export function stampLandmarkLabels(
 			continue;
 		}
 
-		const fontSize = Math.max(11, frame.cellHeight * spec.fontSizeMultiplier);
-		const font = `${spec.weight} ${fontSize}px ${landmarkFontFamily}`;
-		const measuredWidth = measureLabelWidth(name, font);
-		const widthInCells = Math.max(name.length, Math.ceil(measuredWidth / frame.cellWidth));
-		if (widthInCells < 2 || widthInCells > Math.floor(frame.cols * 0.4)) {
+		const [x, y] = point;
+		if (x < -120 || x > viewport.width + 120 || y < -120 || y > viewport.height + 120) {
 			continue;
 		}
 
-		const row = Math.round(point[1] / frame.cellHeight - 0.5);
-		const startColumn = Math.round(point[0] / frame.cellWidth - widthInCells / 2);
-		if (
-			row < 0 ||
-			row >= frame.rowCount ||
-			startColumn < 0 ||
-			startColumn + name.length > frame.cols
-		) {
+		const fontSize = Math.max(11, 14 * spec.fontSizeMultiplier);
+		const font = `${spec.weight} ${fontSize}px ${landmarkFontFamily}`;
+		const { height, width } = measureTextBlock(name, font, fontSize * 1.2);
+		if (width < 18 || width > viewport.width * 0.4) {
 			continue;
 		}
 
 		candidates.push({
 			font,
+			height,
+			key: `${layerId}:${name}:${Math.round(x)}:${Math.round(y)}`,
 			name,
 			opacity: spec.opacity,
 			priority: spec.priority,
-			row,
-			startColumn,
-			widthInCells
+			width,
+			x,
+			y: y - height * 0.56
 		});
 	}
 
@@ -180,53 +157,21 @@ export function stampLandmarkLabels(
 	);
 
 	const accepted: LandmarkLabelCommand[] = [];
-	const occupied: Array<{ row: number; left: number; right: number }> = [];
+	const occupied: Array<{ left: number; right: number; top: number; bottom: number }> = [];
 	for (const candidate of candidates) {
-		const left = candidate.startColumn - 1;
-		const right = candidate.startColumn + candidate.widthInCells;
-		if (
-			occupied.some(
-				(existing) =>
-					existing.row === candidate.row && !(right < existing.left || left > existing.right)
-			)
-		) {
+		const bounds = {
+			left: candidate.x - candidate.width / 2 - 6,
+			right: candidate.x + candidate.width / 2 + 6,
+			top: candidate.y - candidate.height / 2 - 3,
+			bottom: candidate.y + candidate.height / 2 + 3
+		};
+		if (occupied.some((existing) => intersects(bounds, existing))) {
 			continue;
 		}
 
 		accepted.push(candidate);
-		occupied.push({ row: candidate.row, left, right });
+		occupied.push(bounds);
 	}
 
-	if (accepted.length === 0) {
-		return frame;
-	}
-
-	const cells = [...frame.cells];
-	for (const label of accepted) {
-		for (let index = 0; index < label.name.length; index += 1) {
-			const column = label.startColumn + index;
-			const cellIndex = label.row * frame.cols + column;
-			const existing = cells[cellIndex];
-			if (!existing) {
-				continue;
-			}
-
-			cells[cellIndex] = {
-				...existing,
-				char: label.name[index] ?? existing.char,
-				entity: 'points',
-				font: label.font,
-				opacity: label.opacity,
-				coverage: 1
-			};
-		}
-	}
-
-	const rows = buildRows(cells, frame.cols, frame.rowCount);
-	return {
-		...frame,
-		rows,
-		text: rows.join('\n'),
-		cells
-	};
+	return accepted;
 }

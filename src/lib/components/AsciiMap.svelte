@@ -1,7 +1,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
+	import {
+		AIRCRAFT_BLEND_DURATION_MS,
+		buildAircraftTracks,
+		resolveDisplayedAircraft,
+		type AircraftTrack
+	} from '$lib/aircraft/motion';
+	import { stampAircraftGlyphs, type PresentedAircraftGlyph } from '$lib/aircraft/stamp';
+	import {
+		OPENSKY_POLL_INTERVAL_MS,
+		aircraftBoundsKey,
+		type AircraftBounds,
+		type AircraftFeedResponse
+	} from '$lib/aircraft/opensky';
+	import { type AsciiFrame, type FeatureGroups, type QualityMode } from '$lib/ascii';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
 	import { createRasterAsciiRenderer } from '$lib/ascii/raster';
 	import {
@@ -22,11 +35,11 @@
 		type LayerToggleKey,
 		type RenderPreference
 	} from '$lib/map/config';
-	import { buildCityLabelCommands } from '$lib/map/cityLabels';
-	import { stampLandmarkLabels } from '$lib/map/landmarkLabels';
+	import { buildCityLabelCommands, type CityLabelCommand } from '$lib/map/cityLabels';
+	import { buildLandmarkLabelCommands, type LandmarkLabelCommand } from '$lib/map/landmarkLabels';
 	import { projectMapFeatures } from '$lib/map/projection';
 	import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
-	import type { Map, MapGeoJSONFeature } from 'maplibre-gl';
+	import type { Map as MapLibreMap, MapGeoJSONFeature } from 'maplibre-gl';
 
 	const entityColors: Record<
 		| 'background'
@@ -69,8 +82,12 @@
 		['performance', 'Performance'],
 		['quality', 'Quality']
 	] as const;
+	const authorName = 'DY';
 	const rasterRenderer = createRasterAsciiRenderer();
 	const glyphFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
+	const aircraftMarkerGlyph = 'A';
+	const aircraftOverlayFrameMs = 1000 / 30;
+	const aircraftViewportRefreshMs = 20_000;
 	const glyphWidthSamples = [
 		'W',
 		'B',
@@ -89,12 +106,10 @@
 		't',
 		'c'
 	];
-	const cityLabelStroke = 'rgba(4, 8, 11, 0.84)';
-
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
 	let canvas: HTMLCanvasElement;
-	let map: Map | undefined;
+	let map: MapLibreMap | undefined;
 	let resizeObserver: ResizeObserver | undefined;
 	let frameRequest = 0;
 	let frame = $state<AsciiFrame | null>(null);
@@ -103,7 +118,7 @@
 	let qualityPreference = $state<RenderPreference>('auto');
 	let roadDetail = $state(DEFAULT_ROAD_DETAIL);
 	let waterDetail = $state(DEFAULT_WATER_DETAIL);
-	let showBackgroundMap = $state(true);
+	let showBackgroundMap = $state(false);
 	let layerState = $state<Record<LayerToggleKey, boolean>>({
 		roads: true,
 		bridges: true,
@@ -129,6 +144,24 @@
 	let fps = $state(0);
 	let lastRenderAt = 0;
 	let onFontsReady: (() => void) | undefined;
+	let cityLabelCommands = $state<CityLabelCommand[]>([]);
+	let landmarkLabelCommands = $state<LandmarkLabelCommand[]>([]);
+	let showAircraft = $state(true);
+	let aircraftCount = $state(0);
+	let aircraftVisibleCount = $state(0);
+	let aircraftFeedCached = $state(false);
+	let aircraftFeedStale = $state(false);
+	let aircraftFeedError = $state('');
+	let aircraftFetchedAt = $state<number | null>(null);
+	let aircraftLoading = $state(false);
+	let aircraftTracks = new Map<string, AircraftTrack>();
+	let aircraftAnimationFrame = 0;
+	let aircraftPollTimer: number | undefined;
+	let lastAircraftRequestAt = 0;
+	let lastAircraftViewportFetchAt = 0;
+	let lastAircraftBoundsKey = '';
+	let lastAircraftOverlayAt = 0;
+	let aircraftGlyphs: PresentedAircraftGlyph[] = [];
 
 	function currentQualityMode(): QualityMode {
 		return qualityPreference === 'performance' ? 'moving' : 'settled';
@@ -149,6 +182,20 @@
 
 	function currentQueryLayers(): Record<LayerToggleKey, readonly string[]> {
 		return resolveQueryLayers(currentQualityMode(), currentEffectiveRoadDetail());
+	}
+
+	function currentAircraftBounds(): AircraftBounds | null {
+		if (!map) {
+			return null;
+		}
+
+		const bounds = map.getBounds();
+		return {
+			lamin: bounds.getSouth(),
+			lomin: bounds.getWest(),
+			lamax: bounds.getNorth(),
+			lomax: bounds.getEast()
+		};
 	}
 
 	function queueRender(): void {
@@ -196,12 +243,223 @@
 		queueRender();
 	}
 
+	function stopAircraftPolling(): void {
+		if (aircraftPollTimer !== undefined) {
+			window.clearTimeout(aircraftPollTimer);
+			aircraftPollTimer = undefined;
+		}
+	}
+
+	function scheduleAircraftPolling(delay = OPENSKY_POLL_INTERVAL_MS): void {
+		stopAircraftPolling();
+		if (!showAircraft) {
+			return;
+		}
+
+		aircraftPollTimer = window.setTimeout(() => {
+			aircraftPollTimer = undefined;
+			if (document.visibilityState === 'hidden') {
+				scheduleAircraftPolling(OPENSKY_POLL_INTERVAL_MS);
+				return;
+			}
+
+			void refreshAircraft(true);
+		}, delay);
+	}
+
+	function stopAircraftAnimation(): void {
+		if (aircraftAnimationFrame !== 0) {
+			window.cancelAnimationFrame(aircraftAnimationFrame);
+			aircraftAnimationFrame = 0;
+		}
+	}
+
+	function redrawCurrentView(): void {
+		if (frame) {
+			const presentedFrame = stampAircraftIntoFrame(frame);
+			drawFrame(presentedFrame);
+			drawAircraftGlyphs();
+			return;
+		}
+
+		aircraftVisibleCount = 0;
+		aircraftGlyphs = [];
+	}
+
+	function animateAircraft(now: number): void {
+		aircraftAnimationFrame = 0;
+		if (!showAircraft || aircraftTracks.size === 0) {
+			return;
+		}
+
+		if (now - lastAircraftOverlayAt >= aircraftOverlayFrameMs) {
+			lastAircraftOverlayAt = now;
+			redrawCurrentView();
+		}
+
+		aircraftAnimationFrame = window.requestAnimationFrame(animateAircraft);
+	}
+
+	function startAircraftAnimation(): void {
+		if (aircraftAnimationFrame !== 0 || !showAircraft || aircraftTracks.size === 0) {
+			return;
+		}
+
+		aircraftAnimationFrame = window.requestAnimationFrame(animateAircraft);
+	}
+
+	function aircraftFeedStatus(): string {
+		if (!showAircraft) {
+			return 'Off';
+		}
+		if (aircraftFeedError) {
+			return 'Error';
+		}
+		if (aircraftLoading && aircraftFetchedAt === null) {
+			return 'Loading';
+		}
+		if (aircraftFeedStale) {
+			return 'Stale cache';
+		}
+		if (aircraftFeedCached) {
+			return 'Cached';
+		}
+		if (aircraftFetchedAt !== null) {
+			return 'Live';
+		}
+		return 'Waiting';
+	}
+
+	function updateAircraftVisibility(checked: boolean): void {
+		showAircraft = checked;
+		if (!checked) {
+			stopAircraftPolling();
+			stopAircraftAnimation();
+			redrawCurrentView();
+			return;
+		}
+
+		if (aircraftTracks.size > 0) {
+			startAircraftAnimation();
+			redrawCurrentView();
+		}
+
+		void refreshAircraft(lastAircraftRequestAt === 0);
+	}
+
+	async function refreshAircraft(force = false): Promise<void> {
+		if (!map || !showAircraft || aircraftLoading) {
+			return;
+		}
+
+		const bounds = currentAircraftBounds();
+		if (!bounds) {
+			return;
+		}
+
+		const now = Date.now();
+		const boundsKey = aircraftBoundsKey(bounds);
+		const sameBounds = boundsKey === lastAircraftBoundsKey;
+		if (
+			!force &&
+			((sameBounds &&
+				lastAircraftRequestAt !== 0 &&
+				now - lastAircraftRequestAt < OPENSKY_POLL_INTERVAL_MS) ||
+				(!sameBounds &&
+					lastAircraftViewportFetchAt !== 0 &&
+					now - lastAircraftViewportFetchAt < aircraftViewportRefreshMs))
+		) {
+			return;
+		}
+
+		aircraftLoading = true;
+		lastAircraftRequestAt = now;
+		if (!sameBounds) {
+			lastAircraftViewportFetchAt = now;
+		}
+		try {
+			const url = new URL('/api/aircraft', window.location.origin);
+			url.searchParams.set('lamin', `${bounds.lamin}`);
+			url.searchParams.set('lomin', `${bounds.lomin}`);
+			url.searchParams.set('lamax', `${bounds.lamax}`);
+			url.searchParams.set('lomax', `${bounds.lomax}`);
+
+			const response = await fetch(url, {
+				headers: { accept: 'application/json' }
+			});
+			const payload = (await response.json()) as AircraftFeedResponse & { error?: string };
+			if (!response.ok) {
+				throw new Error(payload.error ?? 'Unable to load aircraft.');
+			}
+
+			const sampledAt = payload.sourceTime !== null ? payload.sourceTime * 1000 : now;
+			aircraftTracks = buildAircraftTracks(
+				aircraftTracks,
+				payload.aircraft,
+				now,
+				sampledAt,
+				AIRCRAFT_BLEND_DURATION_MS
+			);
+			aircraftCount = payload.aircraft.length;
+			aircraftFeedCached = payload.cached;
+			aircraftFeedStale = payload.stale;
+			aircraftFeedError = '';
+			aircraftFetchedAt = now;
+			lastAircraftBoundsKey = boundsKey;
+			startAircraftAnimation();
+			redrawCurrentView();
+		} catch (error) {
+			aircraftFeedError =
+				error instanceof Error ? error.message : 'Unable to refresh the aircraft feed.';
+		} finally {
+			aircraftLoading = false;
+			scheduleAircraftPolling(OPENSKY_POLL_INTERVAL_MS);
+		}
+	}
+
+	function fetchAircraftHere(): void {
+		void refreshAircraft(true);
+	}
+
 	function friendlyMapError(message: string): string {
 		if (message.includes('Failed to initialize WebGL')) {
 			return 'WebGL is unavailable in this browser session, so the live MapLibre layer cannot start here. Open the prototype in a normal desktop browser to see the ASCII map render.';
 		}
 
 		return message;
+	}
+
+	function stampAircraftIntoFrame(baseFrame: AsciiFrame): AsciiFrame {
+		if (!showAircraft || !map || aircraftTracks.size === 0) {
+			aircraftVisibleCount = 0;
+			aircraftGlyphs = [];
+			return baseFrame;
+		}
+
+		const displayedAircraft = resolveDisplayedAircraft(aircraftTracks.values(), Date.now());
+		if (displayedAircraft.length === 0) {
+			aircraftVisibleCount = 0;
+			aircraftGlyphs = [];
+			return baseFrame;
+		}
+
+		const markers = displayedAircraft.map((aircraft) => {
+			const point = map!.project([aircraft.displayLongitude, aircraft.displayLatitude]);
+			return {
+				heading: aircraft.heading,
+				x: point.x,
+				y: point.y,
+				onGround: aircraft.onGround
+			};
+		});
+		const stamped = stampAircraftGlyphs(baseFrame, markers, {
+			char: aircraftMarkerGlyph,
+			fontFamily: glyphFontFamily,
+			zoom: map.getZoom()
+		});
+		aircraftVisibleCount = stamped.visibleCount;
+		aircraftGlyphs = stamped.glyphs;
+		return stamped.frame;
 	}
 
 	function resolveGlyphFontSize(
@@ -242,7 +500,7 @@
 		};
 	}
 
-	function collectVisibleFeatures(activeMap: Map): FeatureGroups {
+	function collectVisibleFeatures(activeMap: MapLibreMap): FeatureGroups {
 		const groups: FeatureGroups = {};
 		const rawGroups: Record<LayerToggleKey, MapGeoJSONFeature[]> = {
 			roads: [],
@@ -357,6 +615,15 @@
 		let currentFont = defaultFont;
 		let currentOpacity = 1;
 		let cellIndex = 0;
+		const rotatedGlyphs: Array<{
+			entity: keyof typeof entityColors;
+			font: string;
+			glyph: string;
+			opacity: number;
+			rotation: number;
+			x: number;
+			y: number;
+		}> = [];
 
 		for (let row = 0; row < nextFrame.rowCount; row += 1) {
 			const currentRow = nextFrame.rows[row] ?? '';
@@ -384,9 +651,35 @@
 					currentOpacity = opacity;
 				}
 
+				const x = column * nextFrame.cellWidth + nextFrame.cellWidth / 2;
+				const rotation = cell?.rotation ?? 0;
+				if (rotation !== 0) {
+					rotatedGlyphs.push({
+						entity,
+						font,
+						glyph,
+						opacity,
+						rotation,
+						x,
+						y
+					});
+					continue;
+				}
+
 				context.fillStyle = entityColors[entity];
-				context.fillText(glyph, column * nextFrame.cellWidth + nextFrame.cellWidth / 2, y);
+				context.fillText(glyph, x, y);
 			}
+		}
+
+		for (const glyph of rotatedGlyphs) {
+			context.save();
+			context.font = glyph.font;
+			context.globalAlpha = glyph.opacity;
+			context.fillStyle = entityColors[glyph.entity];
+			context.translate(glyph.x, glyph.y);
+			context.rotate((glyph.rotation * Math.PI) / 180);
+			context.fillText(glyph.glyph, 0, 0);
+			context.restore();
 		}
 
 		if (currentOpacity !== 1) {
@@ -394,13 +687,8 @@
 		}
 	}
 
-	function drawCityLabels(cityFeatures: readonly Feature[] | undefined): void {
-		if (
-			!cityFeatures ||
-			cityFeatures.length === 0 ||
-			!map ||
-			!cityLabelsVisibleAtZoom(map.getZoom())
-		) {
+	function drawAircraftGlyphs(): void {
+		if (!canvas || aircraftGlyphs.length === 0) {
 			return;
 		}
 
@@ -409,39 +697,54 @@
 			return;
 		}
 
-		const labels = buildCityLabelCommands(cityFeatures, {
-			width: stage.clientWidth,
-			height: stage.clientHeight
-		});
-		if (labels.length === 0) {
-			return;
-		}
-
 		const pixelRatio = window.devicePixelRatio || 1;
 		context.save();
 		context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 		context.textAlign = 'center';
 		context.textBaseline = 'middle';
-		context.strokeStyle = cityLabelStroke;
-		context.lineJoin = 'round';
-		context.lineWidth = 3;
 
-		let currentFont = '';
-		let currentOpacity = 1;
+		for (const glyph of aircraftGlyphs) {
+			context.save();
+			context.translate(glyph.x, glyph.y);
+			context.rotate((glyph.rotation * Math.PI) / 180);
+			context.globalCompositeOperation = 'destination-out';
+			const wakeRadius = Math.max(glyph.clearWidth, glyph.clearHeight) * 0.52;
+			const wakeGradient = context.createRadialGradient(
+				0,
+				0,
+				Math.max(1.5, wakeRadius * 0.1),
+				0,
+				0,
+				wakeRadius
+			);
+			wakeGradient.addColorStop(0, 'rgba(0, 0, 0, 0.68)');
+			wakeGradient.addColorStop(0.58, 'rgba(0, 0, 0, 0.24)');
+			wakeGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+			context.fillStyle = wakeGradient;
+			context.beginPath();
+			context.ellipse(0, 0, glyph.clearWidth / 2, glyph.clearHeight / 2, 0, 0, Math.PI * 2);
+			context.fill();
 
-		for (const label of labels) {
-			if (label.font !== currentFont) {
-				context.font = label.font;
-				currentFont = label.font;
+			context.lineJoin = 'round';
+			context.lineCap = 'round';
+			context.fillStyle = entityColors.points;
+			for (const segment of glyph.segments) {
+				context.font = segment.font;
+				context.lineWidth = Math.max(1.6, glyph.clearHeight * 0.1);
+				context.strokeStyle = 'rgba(0, 0, 0, 1)';
+				context.globalAlpha = 0.92;
+				context.strokeText(segment.char, segment.dx, segment.dy);
+				context.fillText(segment.char, segment.dx, segment.dy);
 			}
-			if (label.opacity !== currentOpacity) {
-				context.globalAlpha = label.opacity;
-				currentOpacity = label.opacity;
-			}
 
-			context.fillStyle = entityColors.cities;
-			context.strokeText(label.name, label.x, label.y);
-			context.fillText(label.name, label.x, label.y);
+			context.globalCompositeOperation = 'source-over';
+			context.fillStyle = entityColors.points;
+			for (const segment of glyph.segments) {
+				context.font = segment.font;
+				context.globalAlpha = glyph.opacity * segment.opacity;
+				context.fillText(segment.char, segment.dx, segment.dy);
+			}
+			context.restore();
 		}
 
 		context.restore();
@@ -490,13 +793,25 @@
 		nextFrame = applyProportionalTypography(nextFrame, {
 			waterDetail
 		});
-		if (layerState.landmarks && mapZoom >= LANDMARK_LABEL_MIN_ZOOM) {
-			nextFrame = stampLandmarkLabels(nextFrame, layers.landmarks, mapZoom);
-		}
-
-		drawFrame(nextFrame);
-		drawCityLabels(layers.cities);
+		cityLabelCommands = cityLabelsVisibleAtZoom(mapZoom)
+			? buildCityLabelCommands(layers.cities ?? [], {
+					width: viewportWidth,
+					height: viewportHeight
+				})
+			: [];
+		landmarkLabelCommands =
+			layerState.landmarks && mapZoom >= LANDMARK_LABEL_MIN_ZOOM
+				? buildLandmarkLabelCommands(
+						layers.landmarks,
+						{
+							width: viewportWidth,
+							height: viewportHeight
+						},
+						mapZoom
+					)
+				: [];
 		frame = nextFrame;
+		redrawCurrentView();
 
 		const now = performance.now();
 		if (lastRenderAt !== 0) {
@@ -526,12 +841,30 @@
 					isLoaded = true;
 					window.requestAnimationFrame(() => map?.resize());
 					queueRender();
+					if (showAircraft) {
+						void refreshAircraft(true);
+					}
 				});
 
 				map.on('movestart', queueRender);
 				map.on('move', queueRender);
 				map.on('zoom', queueRender);
-				map.on('moveend', queueRender);
+				map.on('moveend', () => {
+					queueRender();
+					if (!showAircraft) {
+						return;
+					}
+
+					const bounds = currentAircraftBounds();
+					if (!bounds) {
+						return;
+					}
+
+					const nextBoundsKey = aircraftBoundsKey(bounds);
+					if (nextBoundsKey !== lastAircraftBoundsKey) {
+						void refreshAircraft(false);
+					}
+				});
 				map.on('idle', queueRender);
 				map.on('error', (event) => {
 					const message =
@@ -566,6 +899,8 @@
 			if (frameRequest !== 0) {
 				window.cancelAnimationFrame(frameRequest);
 			}
+			stopAircraftPolling();
+			stopAircraftAnimation();
 			if (onFontsReady) {
 				document.fonts?.removeEventListener?.('loadingdone', onFontsReady);
 			}
@@ -581,6 +916,24 @@
 			<div bind:this={mapHost} class:map-hidden={!showBackgroundMap} class="map-host"></div>
 			<canvas bind:this={canvas} class="ascii-canvas"></canvas>
 			<div class="scanlines" aria-hidden="true"></div>
+			<div class="label-overlay">
+				{#each cityLabelCommands as label (label.key)}
+					<span
+						class="map-label city-label"
+						style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
+					>
+						{label.name}
+					</span>
+				{/each}
+				{#each landmarkLabelCommands as label (label.key)}
+					<span
+						class="map-label landmark-label"
+						style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
+					>
+						{label.name}
+					</span>
+				{/each}
+			</div>
 
 			{#if !isLoaded && !errorMessage}
 				<div class="status-card">Loading vector tiles and warming the ASCII overlay…</div>
@@ -593,16 +946,59 @@
 	</div>
 
 	<aside class="control-panel">
-		<p class="eyebrow">Milestone 1 Prototype</p>
-		<h1>Real-Time ASCII OSM Viewer</h1>
-		<p class="lede">
-			Live vector-tile features are sampled in the browser and redrawn as a proportional
-			letterfield. Drag, zoom, and toggle roads, bridges, buildings, water, greens, rail, tunnels,
-			or labels independently while stronger cells step up from
-			<code>r</code>/<code>b</code>/<code>w</code> to <code>R</code>/<code>B</code>/<code>W</code>.
-			City names switch to measured label text at broader zoom levels, while landmark names stamp
-			directly into the field at close zooms.
-		</p>
+		<header class="title-block">
+			<pre class="title-art" aria-label="ASCII MAP">
+█████╗ ███████╗ ██████╗██╗██╗    ███╗   ███╗ █████╗ ██████╗ 
+██╔══██╗██╔════╝██╔════╝██║██║    ████╗ ████║██╔══██╗██╔══██╗
+███████║███████╗██║     ██║██║    ██╔████╔██║███████║██████╔╝
+██╔══██║╚════██║██║     ██║██║    ██║╚██╔╝██║██╔══██║██╔═══╝ 
+██║  ██║███████║╚██████╗██║██║    ██║ ╚═╝ ██║██║  ██║██║     
+╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝</pre>
+			<p class="byline">Done by {authorName}</p>
+			<div class="social-row" aria-label="Creator badges">
+				<a
+					class="social-badge"
+					href="https://github.com/Lionel-Lim/"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="DY Lim on GitHub"
+					title="GitHub"
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path
+							d="M12 2C6.48 2 2 6.59 2 12.26c0 4.54 2.87 8.39 6.84 9.75.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.22-3.37-1.22-.46-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .08 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.64-1.37-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.72 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 6.84c.85 0 1.7.12 2.49.36 1.9-1.32 2.74-1.05 2.74-1.05.56 1.41.21 2.46.11 2.72.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.81-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.27 10.27 0 0 0 22 12.26C22 6.59 17.52 2 12 2Z"
+						/>
+					</svg>
+				</a>
+				<a
+					class="social-badge linkedin-badge"
+					href="https://www.linkedin.com/in/dylim/"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="DY Lim on LinkedIn"
+					title="LinkedIn"
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path
+							d="M6.94 8.5A1.56 1.56 0 1 1 6.94 5.4a1.56 1.56 0 0 1 0 3.1ZM5.62 18.6h2.64V9.93H5.62V18.6Zm4.3 0h2.63v-4.82c0-1.28.24-2.52 1.78-2.52 1.52 0 1.54 1.47 1.54 2.6v4.74h2.64v-5.3c0-2.6-.56-4.6-3.55-4.6-1.44 0-2.41.81-2.8 1.58h-.04V9.93H9.93c.03.77 0 8.67 0 8.67Z"
+						/>
+					</svg>
+				</a>
+			</div>
+		</header>
+
+		<section class="panel-section">
+			<h2>Display</h2>
+			<label class="toggle-row">
+				<span>Background Map</span>
+				<input
+					type="checkbox"
+					checked={showBackgroundMap}
+					onchange={(event) =>
+						updateBackgroundMap((event.currentTarget as HTMLInputElement).checked)}
+				/>
+			</label>
+		</section>
 
 		<section class="panel-section">
 			<h2>Layers</h2>
@@ -618,6 +1014,26 @@
 						/>
 					</label>
 				{/each}
+				<label class="toggle-row">
+					<span>Aircraft</span>
+					<input
+						type="checkbox"
+						checked={showAircraft}
+						onchange={(event) =>
+							updateAircraftVisibility((event.currentTarget as HTMLInputElement).checked)}
+					/>
+				</label>
+			</div>
+			<div class="action-group">
+				<button
+					type="button"
+					class="action-button"
+					disabled={!showAircraft || aircraftLoading}
+					onclick={fetchAircraftHere}
+				>
+					{aircraftLoading ? 'Fetching aircraft…' : 'Fetch Aircraft Here'}
+				</button>
+				<p class="action-hint">Fetches planes for the current map view immediately.</p>
 			</div>
 		</section>
 
@@ -668,19 +1084,6 @@
 		</section>
 
 		<section class="panel-section">
-			<h2>Display</h2>
-			<label class="toggle-row">
-				<span>Background Map</span>
-				<input
-					type="checkbox"
-					checked={showBackgroundMap}
-					onchange={(event) =>
-						updateBackgroundMap((event.currentTarget as HTMLInputElement).checked)}
-				/>
-			</label>
-		</section>
-
-		<section class="panel-section">
 			<h2>Quality</h2>
 			<div class="segmented-row quality-row">
 				{#each qualityOptions as [value, label] (value)}
@@ -704,7 +1107,7 @@
 				</div>
 				<div>
 					<dt>Glyphs</dt>
-					<dd>R/r · X/x · B/b · W/w · G/g · M/m · T/t + labels</dd>
+					<dd>R/r · X/x · B/b · W/w · G/g · M/m · T/t · aAa + labels</dd>
 				</div>
 				<div>
 					<dt>Road detail</dt>
@@ -777,6 +1180,16 @@
 					<dd>{featureCounts.landmarks}</dd>
 				</div>
 				<div>
+					<dt>Aircraft</dt>
+					<dd>
+						{showAircraft ? `${aircraftVisibleCount} visible / ${aircraftCount} tracked` : 'off'}
+					</dd>
+				</div>
+				<div>
+					<dt>Aircraft feed</dt>
+					<dd>{aircraftFeedError || aircraftFeedStatus()}</dd>
+				</div>
+				<div>
 					<dt>Basemap</dt>
 					<dd>{showBackgroundMap ? 'Visible' : 'Hidden'}</dd>
 				</div>
@@ -792,20 +1205,25 @@
 
 <style>
 	.prototype-shell {
-		min-height: 100vh;
+		height: 100vh;
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
 		gap: 1rem;
 		padding: 1rem;
+		overflow: hidden;
+		align-items: start;
 	}
 
 	.stage-wrap {
 		min-width: 0;
+		position: sticky;
+		top: 1rem;
+		height: calc(100vh - 2rem);
 	}
 
 	.map-stage {
 		position: relative;
-		min-height: calc(100vh - 2rem);
+		height: 100%;
 		overflow: hidden;
 		border: 1px solid rgba(144, 243, 213, 0.18);
 		border-radius: 1.5rem;
@@ -820,7 +1238,8 @@
 
 	.map-host,
 	.ascii-canvas,
-	.scanlines {
+	.scanlines,
+	.label-overlay {
 		position: absolute;
 		inset: 0;
 	}
@@ -846,6 +1265,40 @@
 		pointer-events: none;
 	}
 
+	.label-overlay {
+		pointer-events: none;
+		overflow: hidden;
+	}
+
+	.map-label {
+		position: absolute;
+		transform: translate(-50%, -50%);
+		white-space: nowrap;
+		font-kerning: normal;
+		font-variant-ligatures: common-ligatures;
+		text-rendering: geometricPrecision;
+	}
+
+	.city-label {
+		color: #c7d7ff;
+		text-shadow:
+			0 1px 0 rgba(4, 8, 11, 0.98),
+			0 -1px 0 rgba(4, 8, 11, 0.98),
+			1px 0 0 rgba(4, 8, 11, 0.98),
+			-1px 0 0 rgba(4, 8, 11, 0.98),
+			0 0 18px rgba(4, 8, 11, 0.4);
+	}
+
+	.landmark-label {
+		color: #90f3d5;
+		text-shadow:
+			0 1px 0 rgba(4, 8, 11, 0.98),
+			0 -1px 0 rgba(4, 8, 11, 0.98),
+			1px 0 0 rgba(4, 8, 11, 0.98),
+			-1px 0 0 rgba(4, 8, 11, 0.98),
+			0 0 14px rgba(144, 243, 213, 0.24);
+	}
+
 	.scanlines {
 		background:
 			linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 65%),
@@ -864,15 +1317,17 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+		height: calc(100vh - 2rem);
 		padding: 1.2rem 1.1rem;
 		border: 1px solid rgba(144, 243, 213, 0.18);
 		border-radius: 1.5rem;
 		background: rgba(7, 16, 20, 0.88);
 		box-shadow: 0 20px 48px rgba(0, 0, 0, 0.24);
 		backdrop-filter: blur(18px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 
-	.eyebrow,
 	.panel-section h2,
 	.footnote,
 	dt {
@@ -882,19 +1337,70 @@
 		color: #9db5b4;
 	}
 
-	h1 {
-		margin: 0;
-		font-family: 'Iowan Old Style', 'Book Antiqua', Georgia, serif;
-		font-size: clamp(2rem, 2.6vw, 3.4rem);
-		line-height: 0.98;
-		letter-spacing: -0.03em;
+	.title-block {
+		display: grid;
+		gap: 0.75rem;
 	}
 
-	.lede {
+	.title-art {
 		margin: 0;
-		font-size: 0.97rem;
-		line-height: 1.65;
-		color: rgba(237, 247, 242, 0.84);
+		padding: 0.2rem 0 0.1rem;
+		overflow-x: auto;
+		color: #edf7f2;
+		font-family: 'IBM Plex Mono', 'Courier New', monospace;
+		font-size: clamp(0.36rem, 0.78vw, 0.56rem);
+		font-weight: 600;
+		line-height: 1.06;
+		letter-spacing: -0.02em;
+		text-shadow:
+			0 0 18px rgba(117, 215, 255, 0.08),
+			0 0 28px rgba(144, 243, 213, 0.06);
+		scrollbar-width: none;
+	}
+
+	.title-art::-webkit-scrollbar {
+		display: none;
+	}
+
+	.byline {
+		margin: 0;
+		font-size: 0.92rem;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: rgba(237, 247, 242, 0.72);
+	}
+
+	.social-row {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+	}
+
+	.social-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		border: 1px solid rgba(144, 243, 213, 0.18);
+		border-radius: 999px;
+		background:
+			linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+			rgba(7, 16, 20, 0.92);
+		color: #edf7f2;
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.06),
+			0 8px 18px rgba(0, 0, 0, 0.18);
+	}
+
+	.linkedin-badge {
+		color: #9fd4ff;
+	}
+
+	.social-badge svg {
+		width: 1.15rem;
+		height: 1.15rem;
+		fill: currentColor;
 	}
 
 	.panel-section {
@@ -937,7 +1443,8 @@
 	}
 
 	.quality-row {
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.28fr) minmax(0, 0.92fr);
+		gap: 0.4rem;
 	}
 
 	.range-card {
@@ -947,6 +1454,47 @@
 		border: 1px solid rgba(144, 243, 213, 0.12);
 		border-radius: 1.1rem;
 		background: rgba(255, 255, 255, 0.03);
+	}
+
+	.action-group {
+		display: grid;
+		gap: 0.65rem;
+		margin-top: 0.75rem;
+	}
+
+	.action-button {
+		padding: 0.78rem 0.9rem;
+		border: 1px solid rgba(144, 243, 213, 0.18);
+		border-radius: 999px;
+		background: rgba(144, 243, 213, 0.08);
+		color: #edf7f2;
+		font: inherit;
+		transition:
+			transform 120ms ease,
+			border-color 120ms ease,
+			background 120ms ease,
+			opacity 120ms ease;
+	}
+
+	.action-button:hover,
+	.action-button:focus-visible {
+		transform: translateY(-1px);
+		border-color: rgba(144, 243, 213, 0.34);
+		background: rgba(144, 243, 213, 0.14);
+		outline: none;
+	}
+
+	.action-button:disabled {
+		opacity: 0.6;
+		transform: none;
+		cursor: progress;
+	}
+
+	.action-hint {
+		margin: 0;
+		font-size: 0.82rem;
+		line-height: 1.45;
+		color: rgba(237, 247, 242, 0.62);
 	}
 
 	.range-head,
@@ -975,10 +1523,18 @@
 	}
 
 	.segmented-row button {
-		padding: 0.72rem 0.8rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 0;
+		padding: 0.72rem 0.5rem;
 		border: 1px solid rgba(144, 243, 213, 0.12);
 		border-radius: 999px;
 		background: rgba(255, 255, 255, 0.03);
+		font-size: 0.88rem;
+		line-height: 1.1;
+		text-align: center;
+		white-space: nowrap;
 		transition:
 			transform 120ms ease,
 			border-color 120ms ease,
@@ -1053,11 +1609,25 @@
 
 	@media (max-width: 960px) {
 		.prototype-shell {
+			height: auto;
 			grid-template-columns: 1fr;
+			overflow: visible;
+		}
+
+		.stage-wrap {
+			position: relative;
+			top: 0;
+			height: auto;
 		}
 
 		.map-stage {
 			min-height: 62vh;
+			height: 62vh;
+		}
+
+		.control-panel {
+			height: auto;
+			overflow: visible;
 		}
 	}
 </style>

@@ -1,8 +1,5 @@
-import { prepareWithSegments, walkLineRanges } from '@chenglou/pretext';
 import type { Feature } from '$lib/ascii';
-
-const LABEL_MEASURE_WIDTH = 100_000;
-const labelWidthCache = new Map<string, number>();
+import { measureTextBlock } from './textMeasure';
 const cityLabelFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
 
 interface CityLabelSpec {
@@ -15,6 +12,7 @@ interface CityLabelSpec {
 export interface CityLabelCommand {
 	font: string;
 	height: number;
+	key: string;
 	name: string;
 	opacity: number;
 	priority: number;
@@ -49,22 +47,6 @@ const cityLabelSpecs: Record<string, CityLabelSpec> = {
 		weight: 500
 	}
 };
-
-function measureLabelWidth(text: string, font: string): number {
-	const cacheKey = `${font}\u0000${text}`;
-	const cached = labelWidthCache.get(cacheKey);
-	if (cached !== undefined) {
-		return cached;
-	}
-
-	const prepared = prepareWithSegments(text, font);
-	let width = 0;
-	walkLineRanges(prepared, LABEL_MEASURE_WIDTH, (line) => {
-		width = Math.max(width, line.width);
-	});
-	labelWidthCache.set(cacheKey, width);
-	return width;
-}
 
 function readCityName(feature: Feature): string | null {
 	const properties = feature.properties;
@@ -135,16 +117,17 @@ export function buildCityLabelCommands(
 		const layerId = readLayerId(feature);
 		const spec = cityLabelSpecs[layerId] ?? cityLabelSpecs.label_town;
 		const font = `${spec.weight} ${spec.fontSize}px ${cityLabelFontFamily}`;
-		const width = measureLabelWidth(name, font);
+		const { height, width } = measureTextBlock(name, font, spec.fontSize * 1.25);
 		candidates.push({
 			font,
-			height: spec.fontSize * 1.25,
+			height,
+			key: `${layerId}:${name}:${Math.round(x)}:${Math.round(y)}`,
 			name,
 			opacity: spec.opacity,
 			priority: spec.priority,
 			width,
 			x,
-			y: y - spec.fontSize * 0.45
+			y: y - height * 0.36
 		});
 	}
 

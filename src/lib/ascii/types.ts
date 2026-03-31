@@ -112,6 +112,7 @@ export interface AsciiFrameCell {
 	coverage: number;
 	font?: string;
 	opacity?: number;
+	rotation?: number;
 }
 
 export interface AsciiFrame {
