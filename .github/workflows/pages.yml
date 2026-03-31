@@ -4,6 +4,15 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "static/**"
+      - "package.json"
+      - "package-lock.json"
+      - "svelte.config.js"
+      - "vite.config.ts"
+      - "tsconfig.json"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
