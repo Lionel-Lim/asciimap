@@ -11,6 +11,8 @@
 
 `asciimap` is a hobby project for experimenting with ASCII cartography in the browser.
 
+![Demo video](https://github.com/Lionel-Lim/asciimap/blob/main/demo.mp4)
+
 ## Stack
 
 - SvelteKit (static build via `@sveltejs/adapter-static`)
@@ -32,26 +34,6 @@ npm run lint
 npm run test
 npm run build
 ```
-
-## Static build output
-
-This project now builds as a fully static site. Running `npm run build` outputs deployable files in `build/`.
-
-## GitHub Pages deployment
-
-If your site is hosted at `https://<user>.github.io/<repo>`, build with `BASE_PATH`:
-
-```sh
-BASE_PATH=/<repo> npm run build
-```
-
-Example for repo `asciimap`:
-
-```sh
-BASE_PATH=/asciimap npm run build
-```
-
-Then publish the contents of `build/`.
 
 ## Aircraft feed note
 
