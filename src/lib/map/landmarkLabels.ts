@@ -79,7 +79,11 @@ function readLabelName(feature: Feature): string | null {
 }
 
 function readLayerId(feature: Feature): string {
-	return typeof feature.properties?.__layerId === 'string' ? feature.properties.__layerId : '';
+	return typeof feature.layerId === 'string'
+		? feature.layerId
+		: typeof feature.properties?.__layerId === 'string'
+			? feature.properties.__layerId
+			: '';
 }
 
 function readPoint(feature: Feature): readonly [number, number] | null {

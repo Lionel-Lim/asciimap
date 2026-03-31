@@ -205,7 +205,11 @@ function samplePointFeature(
 
 		if (kind === 'cities') {
 			const layerId =
-				typeof feature.properties?.__layerId === 'string' ? feature.properties.__layerId : '';
+				typeof feature.layerId === 'string'
+					? feature.layerId
+					: typeof feature.properties?.__layerId === 'string'
+						? feature.properties.__layerId
+						: '';
 			const coverage =
 				layerId === 'label_city_capital'
 					? 1

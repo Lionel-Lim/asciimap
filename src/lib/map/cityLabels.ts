@@ -69,9 +69,11 @@ function readCityName(feature: Feature): string | null {
 }
 
 function readLayerId(feature: Feature): string {
-	return typeof feature.properties?.__layerId === 'string'
-		? feature.properties.__layerId
-		: 'label_town';
+	return typeof feature.layerId === 'string'
+		? feature.layerId
+		: typeof feature.properties?.__layerId === 'string'
+			? feature.properties.__layerId
+			: 'label_town';
 }
 
 function readPoint(feature: Feature): readonly [number, number] | null {

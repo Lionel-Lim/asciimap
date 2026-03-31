@@ -106,6 +106,16 @@
 		't',
 		'c'
 	];
+	type QueryPlan = {
+		key: string;
+		activeLayerIds: string[];
+		layerIdToBucket: Record<string, LayerToggleKey>;
+	};
+	type VisibleFeatureCache = {
+		key: string;
+		featureCounts: Record<LayerToggleKey, number>;
+		groups: FeatureGroups;
+	};
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
 	let canvas: HTMLCanvasElement;
@@ -164,6 +174,9 @@
 	let lastAircraftOverlayAt = 0;
 	let aircraftGlyphs: PresentedAircraftGlyph[] = [];
 	const glyphFontSizeCache: Record<string, number> = {};
+	let queryPlanCache: QueryPlan | null = null;
+	let visibleFeatureCache: VisibleFeatureCache | null = null;
+	let visibleFeatureVersion = 0;
 
 	function currentQualityMode(): QualityMode {
 		return qualityPreference === 'performance' ? 'moving' : 'settled';
@@ -182,8 +195,40 @@
 		return resolveEffectiveRoadDetail(roadDetail, zoom, cityLabelsVisibleAtZoom(zoom));
 	}
 
-	function currentQueryLayers(): Record<LayerToggleKey, readonly string[]> {
-		return resolveQueryLayers(currentQualityMode(), currentEffectiveRoadDetail());
+	function currentQueryPlan(): QueryPlan {
+		const quality = currentQualityMode();
+		const effectiveRoadDetail = currentEffectiveRoadDetail();
+		const layerStateKey = layerKeys.map((layerKey) => (layerState[layerKey] ? '1' : '0')).join('');
+		const key = `${quality}|${effectiveRoadDetail}|${layerStateKey}`;
+		if (queryPlanCache?.key === key) {
+			return queryPlanCache;
+		}
+
+		const queryLayers = resolveQueryLayers(quality, effectiveRoadDetail);
+		const activeLayerIds: string[] = [];
+		const layerIdToBucket: Record<string, LayerToggleKey> = {};
+
+		for (const layerKey of layerKeys) {
+			const layerIds = queryLayers[layerKey];
+			for (const layerId of layerIds) {
+				layerIdToBucket[layerId] = layerKey;
+				if (layerState[layerKey]) {
+					activeLayerIds.push(layerId);
+				}
+			}
+		}
+
+		queryPlanCache = {
+			key,
+			activeLayerIds,
+			layerIdToBucket
+		};
+		return queryPlanCache;
+	}
+
+	function invalidateVisibleFeatureCache(): void {
+		visibleFeatureVersion += 1;
+		visibleFeatureCache = null;
 	}
 
 	function currentAircraftBounds(): AircraftBounds | null {
@@ -560,7 +605,30 @@
 		};
 	}
 
-	function collectVisibleFeatures(activeMap: MapLibreMap): FeatureGroups {
+	function collectVisibleFeatures(
+		activeMap: MapLibreMap,
+		viewportWidth: number,
+		viewportHeight: number
+	): FeatureGroups {
+		const queryPlan = currentQueryPlan();
+		const center = activeMap.getCenter();
+		const cacheKey = [
+			visibleFeatureVersion,
+			queryPlan.key,
+			viewportWidth,
+			viewportHeight,
+			activeMap.getZoom(),
+			activeMap.getBearing(),
+			activeMap.getPitch(),
+			center.lng,
+			center.lat,
+			activeMap.getStyle()?.layers?.length ?? 0
+		].join('|');
+		if (visibleFeatureCache?.key === cacheKey) {
+			featureCounts = visibleFeatureCache.featureCounts;
+			return visibleFeatureCache.groups;
+		}
+
 		const groups: FeatureGroups = {};
 		const rawGroups: Record<LayerToggleKey, MapGeoJSONFeature[]> = {
 			roads: [],
@@ -584,28 +652,22 @@
 			cities: 0,
 			landmarks: 0
 		};
-		const queryLayers = currentQueryLayers();
-		const layerIdToBucket: Record<string, LayerToggleKey> = Object.fromEntries(
-			layerKeys.flatMap((layerKey) =>
-				queryLayers[layerKey].map((layerId: string) => [layerId, layerKey] as const)
-			)
-		);
-
-		const activeLayerIds = layerKeys.flatMap((layerKey) =>
-			layerState[layerKey] ? [...queryLayers[layerKey]] : []
-		);
-
-		if (activeLayerIds.length === 0) {
+		if (queryPlan.activeLayerIds.length === 0) {
 			featureCounts = nextFeatureCounts;
+			visibleFeatureCache = {
+				key: cacheKey,
+				featureCounts: nextFeatureCounts,
+				groups
+			};
 			return groups;
 		}
 
 		const queried = activeMap.queryRenderedFeatures({
-			layers: activeLayerIds
+			layers: queryPlan.activeLayerIds
 		});
 
 		for (const feature of queried) {
-			const bucket = layerIdToBucket[feature.layer.id];
+			const bucket = queryPlan.layerIdToBucket[feature.layer.id];
 			if (bucket && layerState[bucket]) {
 				rawGroups[bucket].push(feature);
 			}
@@ -636,6 +698,11 @@
 		}
 
 		featureCounts = nextFeatureCounts;
+		visibleFeatureCache = {
+			key: cacheKey,
+			featureCounts: nextFeatureCounts,
+			groups
+		};
 		return groups;
 	}
 
@@ -866,7 +933,7 @@
 			return;
 		}
 
-		const layers = collectVisibleFeatures(map);
+		const layers = collectVisibleFeatures(map, viewportWidth, viewportHeight);
 		let nextFrame = rasterRenderer.render({
 			viewport: { width: viewportWidth, height: viewportHeight },
 			quality: renderQuality,
@@ -941,6 +1008,7 @@
 
 				map.on('load', () => {
 					isLoaded = true;
+					invalidateVisibleFeatureCache();
 					window.requestAnimationFrame(() => map?.resize());
 					queueRender();
 					if (showAircraft) {
@@ -968,6 +1036,8 @@
 					}
 				});
 				map.on('idle', queueRender);
+				map.on('sourcedata', invalidateVisibleFeatureCache);
+				map.on('styledata', invalidateVisibleFeatureCache);
 				map.on('error', (event) => {
 					const message =
 						event.error instanceof Error

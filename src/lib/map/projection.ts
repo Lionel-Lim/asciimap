@@ -65,10 +65,11 @@ export function projectMapFeatures(map: Map, features: readonly MapGeoJSONFeatur
 
 		projected.push({
 			geometry,
-			properties: {
-				...(feature.properties ?? {}),
-				__layerId: feature.layer.id
-			}
+			layerId: feature.layer.id,
+			properties:
+				feature.properties && typeof feature.properties === 'object'
+					? (feature.properties as Record<string, unknown>)
+					: undefined
 		});
 	}
 

@@ -35,6 +35,7 @@ export type Geometry =
 
 export interface Feature<TProperties extends Record<string, unknown> = Record<string, unknown>> {
 	geometry: Geometry;
+	layerId?: string;
 	properties?: TProperties;
 }
 

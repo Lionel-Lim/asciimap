@@ -218,7 +218,11 @@ function resolveTunnelCoverage(cell: CellState): number {
 
 function resolveCityCoverage(feature: Feature): number {
 	const layerId =
-		typeof feature.properties?.__layerId === 'string' ? feature.properties.__layerId : '';
+		typeof feature.layerId === 'string'
+			? feature.layerId
+			: typeof feature.properties?.__layerId === 'string'
+				? feature.properties.__layerId
+				: '';
 
 	switch (layerId) {
 		case 'label_city_capital':
