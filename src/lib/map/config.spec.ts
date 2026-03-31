@@ -27,8 +27,37 @@ describe('resolveQueryLayers', () => {
 		expect(denseMovingLayers.bridges).toContain('bridge_path_pedestrian');
 	});
 
-	it('always includes city label layers', () => {
+	it('always includes static non-road layers', () => {
 		const layers = resolveQueryLayers('settled', 60);
+		expect(layers.greens).toEqual([
+			'park',
+			'park_outline',
+			'landcover_wood',
+			'landcover_grass',
+			'landcover_wetland',
+			'landuse_pitch',
+			'landuse_track',
+			'landuse_cemetery'
+		]);
+		expect(layers.rails).toEqual([
+			'road_major_rail',
+			'road_transit_rail',
+			'bridge_major_rail',
+			'bridge_transit_rail',
+			'tunnel_major_rail',
+			'tunnel_transit_rail'
+		]);
+		expect(layers.tunnels).toEqual([
+			'waterway_tunnel',
+			'tunnel_motorway',
+			'tunnel_trunk_primary',
+			'tunnel_secondary_tertiary',
+			'tunnel_minor',
+			'tunnel_link',
+			'tunnel_service_track',
+			'tunnel_motorway_link',
+			'tunnel_path_pedestrian'
+		]);
 		expect(layers.cities).toEqual([
 			'label_city_capital',
 			'label_city',

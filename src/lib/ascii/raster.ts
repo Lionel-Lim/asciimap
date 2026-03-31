@@ -32,6 +32,8 @@ interface CellState {
 	coverage: number;
 	roadDirectionsMask: number;
 	bridgeDirectionsMask: number;
+	railDirectionsMask: number;
+	tunnelDirectionsMask: number;
 	pointsUsed: number;
 }
 
@@ -57,6 +59,8 @@ function createCellState(): CellState {
 		coverage: 0,
 		roadDirectionsMask: 0,
 		bridgeDirectionsMask: 0,
+		railDirectionsMask: 0,
+		tunnelDirectionsMask: 0,
 		pointsUsed: 0
 	};
 }
@@ -90,11 +94,14 @@ function resolvePriorities(input: AsciiRenderInput): Record<EntityKind, number> 
 	const buildingDominant = zoom >= 15;
 
 	return {
-		points: 5,
-		cities: 4,
-		bridges: 3,
-		roads: buildingDominant ? 1 : 2,
-		buildings: buildingDominant ? 2 : 1,
+		points: 8,
+		cities: 7,
+		bridges: 6,
+		rails: 5,
+		roads: buildingDominant ? 3 : 4,
+		tunnels: buildingDominant ? 2 : 3,
+		buildings: buildingDominant ? 4 : 2,
+		greens: 1,
 		water: 0
 	};
 }
@@ -181,6 +188,24 @@ function resolveBridgeCoverage(cell: CellState): number {
 	return mask & (mask - 1) ? 1 : 0.7;
 }
 
+function resolveRailCoverage(cell: CellState): number {
+	const mask = cell.railDirectionsMask;
+	if (mask === 0) {
+		return 0.68;
+	}
+
+	return mask & (mask - 1) ? 1 : 0.76;
+}
+
+function resolveTunnelCoverage(cell: CellState): number {
+	const mask = cell.tunnelDirectionsMask;
+	if (mask === 0) {
+		return 0.52;
+	}
+
+	return mask & (mask - 1) ? 0.86 : 0.58;
+}
+
 function resolveCityCoverage(feature: Feature): number {
 	const layerId =
 		typeof feature.properties?.__layerId === 'string' ? feature.properties.__layerId : '';
@@ -227,6 +252,22 @@ function finalizeCell(
 		};
 	}
 
+	if (cell.bestEntity === 'rails') {
+		return {
+			char: chooseLinearGlyph(cell.railDirectionsMask, palettes.rails),
+			entity: 'rails',
+			coverage: resolveRailCoverage(cell)
+		};
+	}
+
+	if (cell.bestEntity === 'tunnels') {
+		return {
+			char: chooseLinearGlyph(cell.tunnelDirectionsMask, palettes.tunnels),
+			entity: 'tunnels',
+			coverage: resolveTunnelCoverage(cell)
+		};
+	}
+
 	if (cell.bestEntity === 'cities') {
 		return {
 			char: cell.coverage >= 0.85 ? (palettes.cities[1] ?? 'C') : (palettes.cities[0] ?? 'c'),
@@ -248,6 +289,14 @@ function finalizeCell(
 		return {
 			char: chooseDensityGlyph(clamp01(cell.coverage), palettes.buildings),
 			entity: 'buildings',
+			coverage: cell.coverage
+		};
+	}
+
+	if (cell.bestEntity === 'greens') {
+		return {
+			char: chooseDensityGlyph(clamp01(cell.coverage), palettes.greens),
+			entity: 'greens',
 			coverage: cell.coverage
 		};
 	}
@@ -391,7 +440,7 @@ function rasterizeCoverage(
 	buffers: RasterBuffers,
 	features: readonly Feature[],
 	input: AsciiRenderInput,
-	kind: 'water' | 'buildings'
+	kind: 'water' | 'buildings' | 'greens'
 ): Float32Array {
 	const { context, sampleWidth, sampleHeight, supersample } = buffers;
 	const coverage = new Float32Array((sampleWidth / supersample) * (sampleHeight / supersample));
@@ -463,7 +512,7 @@ function rasterizeCoverage(
 function sampleRoadLikeFeature(
 	stateGrid: CellState[][],
 	feature: Feature,
-	kind: 'roads' | 'bridges',
+	kind: 'roads' | 'bridges' | 'rails' | 'tunnels',
 	context: ReturnType<typeof createGridContext>,
 	priorities: Record<EntityKind, number>
 ): void {
@@ -503,6 +552,10 @@ function sampleRoadLikeFeature(
 
 				if (kind === 'bridges') {
 					cell.bridgeDirectionsMask |= roadDirectionBits[direction];
+				} else if (kind === 'rails') {
+					cell.railDirectionsMask |= roadDirectionBits[direction];
+				} else if (kind === 'tunnels') {
+					cell.tunnelDirectionsMask |= roadDirectionBits[direction];
 				} else {
 					cell.roadDirectionsMask |= roadDirectionBits[direction];
 				}
@@ -581,6 +634,7 @@ export function createRasterAsciiRenderer() {
 				input,
 				'buildings'
 			);
+			const greenCoverage = rasterizeCoverage(buffers, input.layers.greens ?? [], input, 'greens');
 
 			for (let row = 0; row < size.rows; row += 1) {
 				for (let column = 0; column < size.columns; column += 1) {
@@ -590,6 +644,7 @@ export function createRasterAsciiRenderer() {
 					}
 					const index = row * size.columns + column;
 					updateBestCell(cell, 'water', waterCoverage[index] ?? 0, priorities);
+					updateBestCell(cell, 'greens', greenCoverage[index] ?? 0, priorities);
 					updateBestCell(cell, 'buildings', buildingCoverage[index] ?? 0, priorities);
 				}
 			}
@@ -600,6 +655,14 @@ export function createRasterAsciiRenderer() {
 
 			for (const feature of input.layers.roads ?? []) {
 				sampleRoadLikeFeature(stateGrid, feature, 'roads', context, priorities);
+			}
+
+			for (const feature of input.layers.rails ?? []) {
+				sampleRoadLikeFeature(stateGrid, feature, 'rails', context, priorities);
+			}
+
+			for (const feature of input.layers.tunnels ?? []) {
+				sampleRoadLikeFeature(stateGrid, feature, 'tunnels', context, priorities);
 			}
 
 			for (const feature of input.layers.cities ?? []) {
@@ -616,8 +679,11 @@ export function createRasterAsciiRenderer() {
 				background: 0,
 				roads: 0,
 				bridges: 0,
+				rails: 0,
+				tunnels: 0,
 				buildings: 0,
 				water: 0,
+				greens: 0,
 				cities: 0,
 				points: 0
 			};

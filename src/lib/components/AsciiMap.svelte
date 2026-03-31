@@ -29,7 +29,16 @@
 	import type { Map, MapGeoJSONFeature } from 'maplibre-gl';
 
 	const entityColors: Record<
-		'background' | 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'points',
+		| 'background'
+		| 'roads'
+		| 'bridges'
+		| 'buildings'
+		| 'water'
+		| 'greens'
+		| 'rails'
+		| 'tunnels'
+		| 'cities'
+		| 'points',
 		string
 	> = {
 		background: 'rgba(0, 0, 0, 0)',
@@ -37,6 +46,9 @@
 		bridges: '#ffd596',
 		buildings: '#f4ba67',
 		water: '#75d7ff',
+		greens: '#9be279',
+		rails: '#d3b5ff',
+		tunnels: '#a19ab8',
 		cities: '#c7d7ff',
 		points: '#90f3d5'
 	};
@@ -46,6 +58,9 @@
 		'bridges',
 		'buildings',
 		'water',
+		'greens',
+		'rails',
+		'tunnels',
 		'cities',
 		'landmarks'
 	];
@@ -56,7 +71,24 @@
 	] as const;
 	const rasterRenderer = createRasterAsciiRenderer();
 	const glyphFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
-	const glyphWidthSamples = ['W', 'B', 'R', 'X', 'C', 'w', 'b', 'r', 'x', 'c'];
+	const glyphWidthSamples = [
+		'W',
+		'B',
+		'R',
+		'X',
+		'G',
+		'M',
+		'T',
+		'C',
+		'w',
+		'b',
+		'r',
+		'x',
+		'g',
+		'm',
+		't',
+		'c'
+	];
 	const cityLabelStroke = 'rgba(4, 8, 11, 0.84)';
 
 	let stage: HTMLDivElement;
@@ -77,6 +109,9 @@
 		bridges: true,
 		buildings: true,
 		water: true,
+		greens: true,
+		rails: true,
+		tunnels: true,
 		cities: true,
 		landmarks: true
 	});
@@ -85,6 +120,9 @@
 		bridges: 0,
 		buildings: 0,
 		water: 0,
+		greens: 0,
+		rails: 0,
+		tunnels: 0,
 		cities: 0,
 		landmarks: 0
 	});
@@ -211,6 +249,9 @@
 			bridges: [],
 			buildings: [],
 			water: [],
+			greens: [],
+			rails: [],
+			tunnels: [],
 			cities: [],
 			landmarks: []
 		};
@@ -219,6 +260,9 @@
 			bridges: 0,
 			buildings: 0,
 			water: 0,
+			greens: 0,
+			rails: 0,
+			tunnels: 0,
 			cities: 0,
 			landmarks: 0
 		};
@@ -257,6 +301,12 @@
 			const projected = projectMapFeatures(activeMap, rawGroups[layerKey]);
 			if (layerKey === 'bridges') {
 				groups.bridges = projected;
+			} else if (layerKey === 'greens') {
+				groups.greens = projected;
+			} else if (layerKey === 'rails') {
+				groups.rails = projected;
+			} else if (layerKey === 'tunnels') {
+				groups.tunnels = projected;
 			} else if (layerKey === 'cities') {
 				groups.cities = projected;
 			} else if (layerKey === 'landmarks') {
@@ -421,6 +471,9 @@
 				bridges: layers.bridges,
 				buildings: layers.buildings,
 				water: layers.water,
+				greens: layers.greens,
+				rails: layers.rails,
+				tunnels: layers.tunnels,
 				points: layers.points
 			},
 			config: {
@@ -544,10 +597,11 @@
 		<h1>Real-Time ASCII OSM Viewer</h1>
 		<p class="lede">
 			Live vector-tile features are sampled in the browser and redrawn as a proportional
-			letterfield. Drag, zoom, and toggle roads, bridges, buildings, water, or city labels
-			independently while stronger cells step up from <code>r</code>/<code>b</code>/<code>w</code>
-			to <code>R</code>/<code>B</code>/<code>W</code>. City names switch to measured label text at
-			broader zoom levels, while landmark names stamp directly into the field at close zooms.
+			letterfield. Drag, zoom, and toggle roads, bridges, buildings, water, greens, rail, tunnels,
+			or labels independently while stronger cells step up from
+			<code>r</code>/<code>b</code>/<code>w</code> to <code>R</code>/<code>B</code>/<code>W</code>.
+			City names switch to measured label text at broader zoom levels, while landmark names stamp
+			directly into the field at close zooms.
 		</p>
 
 		<section class="panel-section">
@@ -650,7 +704,7 @@
 				</div>
 				<div>
 					<dt>Glyphs</dt>
-					<dd>R/r · X/x · B/b · W/w + city names</dd>
+					<dd>R/r · X/x · B/b · W/w · G/g · M/m · T/t + labels</dd>
 				</div>
 				<div>
 					<dt>Road detail</dt>
@@ -679,6 +733,9 @@
 							featureCounts.bridges +
 							featureCounts.buildings +
 							featureCounts.water +
+							featureCounts.greens +
+							featureCounts.rails +
+							featureCounts.tunnels +
 							featureCounts.cities +
 							featureCounts.landmarks}
 					</dd>
@@ -698,6 +755,18 @@
 				<div>
 					<dt>Water</dt>
 					<dd>{featureCounts.water}</dd>
+				</div>
+				<div>
+					<dt>Greens</dt>
+					<dd>{featureCounts.greens}</dd>
+				</div>
+				<div>
+					<dt>Rail</dt>
+					<dd>{featureCounts.rails}</dd>
+				</div>
+				<div>
+					<dt>Tunnels</dt>
+					<dd>{featureCounts.tunnels}</dd>
 				</div>
 				<div>
 					<dt>Cities</dt>

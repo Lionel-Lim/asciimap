@@ -1,6 +1,15 @@
 export type QualityMode = 'moving' | 'settled';
 
-export type EntityKind = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'points';
+export type EntityKind =
+	| 'roads'
+	| 'bridges'
+	| 'buildings'
+	| 'water'
+	| 'greens'
+	| 'rails'
+	| 'tunnels'
+	| 'cities'
+	| 'points';
 
 export type Point2D = readonly [number, number];
 
@@ -34,6 +43,9 @@ export interface FeatureGroups {
 	bridges?: readonly Feature[];
 	buildings?: readonly Feature[];
 	water?: readonly Feature[];
+	greens?: readonly Feature[];
+	rails?: readonly Feature[];
+	tunnels?: readonly Feature[];
 	cities?: readonly Feature[];
 	landmarks?: readonly Feature[];
 	points?: readonly Feature[];
@@ -73,8 +85,11 @@ export interface DensityGlyphPalette {
 export interface AsciiPalettes {
 	roads: RoadGlyphPalette;
 	bridges: RoadGlyphPalette;
+	rails: RoadGlyphPalette;
+	tunnels: RoadGlyphPalette;
 	buildings: DensityGlyphPalette;
 	water: DensityGlyphPalette;
+	greens: DensityGlyphPalette;
 	cities: readonly string[];
 	points: readonly string[];
 	background: string;

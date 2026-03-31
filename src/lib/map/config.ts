@@ -1,4 +1,13 @@
-export type LayerToggleKey = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities' | 'landmarks';
+export type LayerToggleKey =
+	| 'roads'
+	| 'bridges'
+	| 'buildings'
+	| 'water'
+	| 'greens'
+	| 'rails'
+	| 'tunnels'
+	| 'cities'
+	| 'landmarks';
 export type RenderPreference = 'auto' | 'performance' | 'quality';
 export type RoadDetailLabel = 'Main roads' | 'Balanced' | 'Branches' | 'All branches';
 export type WaterDetailLabel = 'Light' | 'Balanced' | 'Solid' | 'Dense';
@@ -31,6 +40,9 @@ export const LAYER_LABELS: Record<LayerToggleKey, string> = {
 	bridges: 'Bridges',
 	buildings: 'Buildings',
 	water: 'Water',
+	greens: 'Greens',
+	rails: 'Rail',
+	tunnels: 'Tunnels',
 	cities: 'Cities',
 	landmarks: 'Landmarks'
 };
@@ -120,9 +132,41 @@ const BRIDGE_LAYER_PRESETS = {
 const STATIC_QUERY_LAYERS = {
 	buildings: ['building'],
 	water: ['water', 'waterway_river', 'waterway_other'],
+	greens: [
+		'park',
+		'park_outline',
+		'landcover_wood',
+		'landcover_grass',
+		'landcover_wetland',
+		'landuse_pitch',
+		'landuse_track',
+		'landuse_cemetery'
+	],
+	rails: [
+		'road_major_rail',
+		'road_transit_rail',
+		'bridge_major_rail',
+		'bridge_transit_rail',
+		'tunnel_major_rail',
+		'tunnel_transit_rail'
+	],
+	tunnels: [
+		'waterway_tunnel',
+		'tunnel_motorway',
+		'tunnel_trunk_primary',
+		'tunnel_secondary_tertiary',
+		'tunnel_minor',
+		'tunnel_link',
+		'tunnel_service_track',
+		'tunnel_motorway_link',
+		'tunnel_path_pedestrian'
+	],
 	cities: ['label_city_capital', 'label_city', 'label_town', 'label_village'],
 	landmarks: ['label_other', 'poi_r1', 'poi_r7', 'poi_r20']
-} as const satisfies Record<'buildings' | 'water' | 'cities' | 'landmarks', readonly string[]>;
+} as const satisfies Record<
+	'buildings' | 'water' | 'greens' | 'rails' | 'tunnels' | 'cities' | 'landmarks',
+	readonly string[]
+>;
 
 export const DEFAULT_ROAD_DETAIL = 40;
 export const ROAD_DETAIL_RANGE = {
@@ -253,6 +297,9 @@ export function resolveQueryLayers(
 		bridges: BRIDGE_LAYER_PRESETS[quality].bridges[roadDetailLevel],
 		buildings: STATIC_QUERY_LAYERS.buildings,
 		water: STATIC_QUERY_LAYERS.water,
+		greens: STATIC_QUERY_LAYERS.greens,
+		rails: STATIC_QUERY_LAYERS.rails,
+		tunnels: STATIC_QUERY_LAYERS.tunnels,
 		cities: STATIC_QUERY_LAYERS.cities,
 		landmarks: STATIC_QUERY_LAYERS.landmarks
 	};

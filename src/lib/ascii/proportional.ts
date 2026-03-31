@@ -1,7 +1,15 @@
 import { prepareWithSegments, walkLineRanges } from '@chenglou/pretext';
 import type { AsciiFrame, AsciiFrameCell } from './types';
 
-type ProportionalEntity = 'roads' | 'bridges' | 'buildings' | 'water' | 'cities';
+type ProportionalEntity =
+	| 'roads'
+	| 'bridges'
+	| 'buildings'
+	| 'water'
+	| 'greens'
+	| 'rails'
+	| 'tunnels'
+	| 'cities';
 type FontStyleVariant = 'normal' | 'italic';
 type GlyphTier = 'edge' | 'core';
 
@@ -98,6 +106,51 @@ const typographySpecs: Record<ProportionalEntity, EntityTypographySpec> = {
 		bandDepth: 3.75,
 		coreThreshold: 0.55
 	},
+	greens: {
+		family: 'Georgia, Palatino, "Times New Roman", serif',
+		glyphs: {
+			edge: 'g',
+			core: 'G'
+		},
+		weights: [500, 700],
+		styles: ['normal', 'italic'],
+		sizeMultiplier: 0.96,
+		alphaFloor: 0.2,
+		opacityExponent: 1.45,
+		brightnessBoost: 0.96,
+		bandDepth: 4.2,
+		coreThreshold: 0.7
+	},
+	rails: {
+		family: 'Georgia, Palatino, "Times New Roman", serif',
+		glyphs: {
+			edge: 'm',
+			core: 'M'
+		},
+		weights: [500, 700],
+		styles: ['normal'],
+		sizeMultiplier: 0.92,
+		alphaFloor: 0.28,
+		opacityExponent: 1.25,
+		brightnessBoost: 1,
+		bandDepth: 0,
+		coreThreshold: 0.84
+	},
+	tunnels: {
+		family: 'Georgia, Palatino, "Times New Roman", serif',
+		glyphs: {
+			edge: 't',
+			core: 'T'
+		},
+		weights: [500, 700],
+		styles: ['normal', 'italic'],
+		sizeMultiplier: 0.9,
+		alphaFloor: 0.18,
+		opacityExponent: 1.3,
+		brightnessBoost: 0.92,
+		bandDepth: 0,
+		coreThreshold: 0.8
+	},
 	cities: {
 		family: 'Georgia, Palatino, "Times New Roman", serif',
 		glyphs: {
@@ -140,6 +193,9 @@ function isProportionalEntity(entity: AsciiFrameCell['entity']): entity is Propo
 		entity === 'bridges' ||
 		entity === 'buildings' ||
 		entity === 'water' ||
+		entity === 'greens' ||
+		entity === 'rails' ||
+		entity === 'tunnels' ||
 		entity === 'cities'
 	);
 }
@@ -467,6 +523,9 @@ function buildInteriorDistanceMaps(
 		bridges: buildInteriorDistanceMap(frame, cells, 'bridges'),
 		buildings: buildInteriorDistanceMap(frame, cells, 'buildings'),
 		water: buildInteriorDistanceMap(frame, cells, 'water'),
+		greens: buildInteriorDistanceMap(frame, cells, 'greens'),
+		rails: buildInteriorDistanceMap(frame, cells, 'rails'),
+		tunnels: buildInteriorDistanceMap(frame, cells, 'tunnels'),
 		cities: buildInteriorDistanceMap(frame, cells, 'cities')
 	};
 }

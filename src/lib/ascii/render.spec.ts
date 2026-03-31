@@ -62,6 +62,25 @@ describe('renderAsciiFrame', () => {
 		expect(frame.dominantCounts.buildings).toBe(36);
 	});
 
+	it('renders green landcover polygons as filled areas', () => {
+		const frame = renderAsciiFrame({
+			viewport,
+			quality: 'settled',
+			layers: {
+				greens: fullViewportPolygon().buildings
+			},
+			config: {
+				grid: {
+					moving: { columns: 6 },
+					settled: { columns: 6 }
+				}
+			}
+		});
+
+		expect(frame.rows.every((line) => line === '%%%%%%')).toBe(true);
+		expect(frame.dominantCounts.greens).toBe(36);
+	});
+
 	it('renders roads as directional strokes over lower-priority features', () => {
 		const frame = renderAsciiFrame({
 			viewport,
@@ -148,6 +167,64 @@ describe('renderAsciiFrame', () => {
 		});
 
 		expect(frame.text).toContain('*');
+	});
+
+	it('renders rail lines as distinct linear features', () => {
+		const frame = renderAsciiFrame({
+			viewport,
+			quality: 'moving',
+			layers: {
+				rails: [
+					{
+						geometry: {
+							type: 'LineString',
+							coordinates: [
+								[0, 60],
+								[120, 60]
+							]
+						}
+					}
+				]
+			},
+			config: {
+				grid: {
+					moving: { columns: 6 },
+					settled: { columns: 6 }
+				}
+			}
+		});
+
+		expect(frame.rows[3]).toContain(':');
+		expect(frame.dominantCounts.rails).toBeGreaterThan(0);
+	});
+
+	it('renders tunnels as distinct linear features', () => {
+		const frame = renderAsciiFrame({
+			viewport,
+			quality: 'moving',
+			layers: {
+				tunnels: [
+					{
+						geometry: {
+							type: 'LineString',
+							coordinates: [
+								[0, 60],
+								[120, 60]
+							]
+						}
+					}
+				]
+			},
+			config: {
+				grid: {
+					moving: { columns: 6 },
+					settled: { columns: 6 }
+				}
+			}
+		});
+
+		expect(frame.rows[3]).toContain('_');
+		expect(frame.dominantCounts.tunnels).toBeGreaterThan(0);
 	});
 
 	it('renders water line features in the water layer', () => {
