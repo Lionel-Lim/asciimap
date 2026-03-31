@@ -15,7 +15,6 @@
 		LANDMARK_LABEL_MIN_ZOOM,
 		LAYER_LABELS,
 		MAP_STYLE_URL,
-		QUALITY_SETTLE_MS,
 		ROAD_DETAIL_RANGE,
 		WATER_DETAIL_RANGE,
 		resolveEffectiveRoadDetail,
@@ -66,11 +65,9 @@
 	let map: Map | undefined;
 	let resizeObserver: ResizeObserver | undefined;
 	let frameRequest = 0;
-	let settleTimer: number | undefined;
 	let frame = $state<AsciiFrame | null>(null);
 	let errorMessage = $state('');
 	let isLoaded = $state(false);
-	let interactionMode = $state<QualityMode>('moving');
 	let qualityPreference = $state<RenderPreference>('auto');
 	let roadDetail = $state(DEFAULT_ROAD_DETAIL);
 	let waterDetail = $state(DEFAULT_WATER_DETAIL);
@@ -96,15 +93,7 @@
 	let onFontsReady: (() => void) | undefined;
 
 	function currentQualityMode(): QualityMode {
-		if (qualityPreference === 'performance') {
-			return 'moving';
-		}
-
-		if (qualityPreference === 'quality') {
-			return 'settled';
-		}
-
-		return interactionMode;
+		return qualityPreference === 'performance' ? 'moving' : 'settled';
 	}
 
 	function currentMapZoom(): number {
@@ -133,26 +122,6 @@
 			frameRequest = 0;
 			renderFrame();
 		});
-	}
-
-	function beginInteraction(): void {
-		interactionMode = 'moving';
-		if (settleTimer) {
-			clearTimeout(settleTimer);
-			settleTimer = undefined;
-		}
-		queueRender();
-	}
-
-	function scheduleSettledRender(): void {
-		if (settleTimer) {
-			clearTimeout(settleTimer);
-		}
-
-		settleTimer = window.setTimeout(() => {
-			interactionMode = 'settled';
-			queueRender();
-		}, QUALITY_SETTLE_MS);
 	}
 
 	function updateLayer(layer: LayerToggleKey, checked: boolean): void {
@@ -503,19 +472,14 @@
 				map.on('load', () => {
 					isLoaded = true;
 					window.requestAnimationFrame(() => map?.resize());
-					interactionMode = 'settled';
 					queueRender();
 				});
 
-				map.on('movestart', beginInteraction);
+				map.on('movestart', queueRender);
 				map.on('move', queueRender);
 				map.on('zoom', queueRender);
-				map.on('moveend', scheduleSettledRender);
-				map.on('idle', () => {
-					if (interactionMode === 'settled') {
-						queueRender();
-					}
-				});
+				map.on('moveend', queueRender);
+				map.on('idle', queueRender);
 				map.on('error', (event) => {
 					const message =
 						event.error instanceof Error
@@ -548,9 +512,6 @@
 		return () => {
 			if (frameRequest !== 0) {
 				window.cancelAnimationFrame(frameRequest);
-			}
-			if (settleTimer) {
-				clearTimeout(settleTimer);
 			}
 			if (onFontsReady) {
 				document.fonts?.removeEventListener?.('loadingdone', onFontsReady);
