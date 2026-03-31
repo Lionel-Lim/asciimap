@@ -9,10 +9,12 @@
 	} from '$lib/aircraft/motion';
 	import { stampAircraftGlyphs, type PresentedAircraftGlyph } from '$lib/aircraft/stamp';
 	import {
+		OPENSKY_STATES_URL,
 		OPENSKY_POLL_INTERVAL_MS,
 		aircraftBoundsKey,
-		type AircraftBounds,
-		type AircraftFeedResponse
+		clampOpenSkyBounds,
+		parseOpenSkyStates,
+		type AircraftBounds
 	} from '$lib/aircraft/opensky';
 	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
@@ -186,7 +188,6 @@
 	let showAircraft = $state(true);
 	let aircraftCount = $state(0);
 	let aircraftVisibleCount = $state(0);
-	let aircraftFeedCached = $state(false);
 	let aircraftFeedStale = $state(false);
 	let aircraftFeedError = $state('');
 	let aircraftFetchedAt = $state<number | null>(null);
@@ -324,12 +325,12 @@
 		}
 
 		const bounds = map.getBounds();
-		return {
+		return clampOpenSkyBounds({
 			lamin: bounds.getSouth(),
 			lomin: bounds.getWest(),
 			lamax: bounds.getNorth(),
 			lomax: bounds.getEast()
-		};
+		});
 	}
 
 	function queueRender(): void {
@@ -455,10 +456,7 @@
 			return 'Loading';
 		}
 		if (aircraftFeedStale) {
-			return 'Stale cache';
-		}
-		if (aircraftFeedCached) {
-			return 'Cached';
+			return 'Stale data';
 		}
 		if (aircraftFetchedAt !== null) {
 			return 'Live';
@@ -514,7 +512,7 @@
 			lastAircraftViewportFetchAt = now;
 		}
 		try {
-			const url = new URL('/api/aircraft', window.location.origin);
+			const url = new URL(OPENSKY_STATES_URL);
 			url.searchParams.set('lamin', `${bounds.lamin}`);
 			url.searchParams.set('lomin', `${bounds.lomin}`);
 			url.searchParams.set('lamax', `${bounds.lamax}`);
@@ -523,30 +521,47 @@
 			const response = await fetch(url, {
 				headers: { accept: 'application/json' }
 			});
-			const payload = (await response.json()) as AircraftFeedResponse & { error?: string };
+			const payload = await response.json();
 			if (!response.ok) {
-				throw new Error(payload.error ?? 'Unable to load aircraft.');
+				throw new Error(`OpenSky responded with ${response.status}.`);
 			}
 
-			const sampledAt = payload.sourceTime !== null ? payload.sourceTime * 1000 : now;
+			const aircraft = parseOpenSkyStates(payload);
+			const payloadTime =
+				payload && typeof payload === 'object' ? (payload as { time?: unknown }).time : null;
+			const sourceTime = typeof payloadTime === 'number' ? payloadTime : null;
+			const sampledAt = sourceTime !== null ? sourceTime * 1000 : now;
 			aircraftTracks = buildAircraftTracks(
 				aircraftTracks,
-				payload.aircraft,
+				aircraft,
 				now,
 				sampledAt,
 				AIRCRAFT_BLEND_DURATION_MS
 			);
-			aircraftCount = payload.aircraft.length;
-			aircraftFeedCached = payload.cached;
-			aircraftFeedStale = payload.stale;
+			aircraftCount = aircraft.length;
+			aircraftFeedStale = false;
 			aircraftFeedError = '';
 			aircraftFetchedAt = now;
 			lastAircraftBoundsKey = boundsKey;
 			startAircraftAnimation();
 			redrawCurrentView();
 		} catch (error) {
-			aircraftFeedError =
-				error instanceof Error ? error.message : 'Unable to refresh the aircraft feed.';
+			const hadTrackedAircraft = aircraftTracks.size > 0;
+			if (
+				error instanceof TypeError &&
+				/(networkerror|failed to fetch|load failed)/i.test(error.message)
+			) {
+				aircraftFeedError = hadTrackedAircraft
+					? ''
+					: 'OpenSky feed is unreachable from the browser (network or CORS restriction).';
+			} else {
+				aircraftFeedError = hadTrackedAircraft
+					? ''
+					: error instanceof Error
+						? error.message
+						: 'Unable to refresh the aircraft feed.';
+			}
+			aircraftFeedStale = hadTrackedAircraft;
 		} finally {
 			aircraftLoading = false;
 			scheduleAircraftPolling(OPENSKY_POLL_INTERVAL_MS);
@@ -1202,13 +1217,13 @@
 	<aside class="control-panel">
 		<header class="title-block">
 			<pre class="title-art" aria-label="ASCII MAP">
-█████╗ ███████╗ ██████╗██╗██╗    ███╗   ███╗ █████╗ ██████╗ 
+█████╗  ███████╗ ██████╗██╗██╗    ███╗   ███╗ █████╗ ██████╗ 
 ██╔══██╗██╔════╝██╔════╝██║██║    ████╗ ████║██╔══██╗██╔══██╗
 ███████║███████╗██║     ██║██║    ██╔████╔██║███████║██████╔╝
 ██╔══██║╚════██║██║     ██║██║    ██║╚██╔╝██║██╔══██║██╔═══╝ 
 ██║  ██║███████║╚██████╗██║██║    ██║ ╚═╝ ██║██║  ██║██║     
 ╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝</pre>
-			<p class="byline">Done by {authorName}</p>
+
 			<div class="social-row" aria-label="Creator badges">
 				<a
 					class="social-badge"
@@ -1461,9 +1476,11 @@
 		</section>
 
 		<p class="footnote">
-			Map data © OpenStreetMap contributors. Style via OpenFreeMap Liberty. Map runtime by MapLibre
-			GL JS.
+			Map data © OpenStreetMap contributors, served via OpenFreeMap / OpenMapTiles (Liberty style,
+			including Natural Earth shaded relief). Aircraft data © The OpenSky Network. Built with
+			SvelteKit, Svelte, Vite, MapLibre GL JS, Pretext, and IBM Plex Mono (@fontsource).
 		</p>
+		<p class="byline">by {authorName}</p>
 	</aside>
 </section>
 
@@ -1493,7 +1510,6 @@
 		border-radius: 1.5rem;
 		background:
 			radial-gradient(circle at 20% 20%, rgba(117, 215, 255, 0.14), transparent 28%),
-			radial-gradient(circle at 80% 10%, rgba(244, 186, 103, 0.16), transparent 24%),
 			linear-gradient(160deg, rgba(6, 17, 23, 0.98), rgba(4, 8, 11, 0.96));
 		box-shadow:
 			0 24px 60px rgba(0, 0, 0, 0.3),

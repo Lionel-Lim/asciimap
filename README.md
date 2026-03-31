@@ -1,42 +1,79 @@
-# sv
+# asciimap
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
-
-## Creating a project
-
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
+```text
+█████╗  ███████╗ ██████╗██╗██╗    ███╗   ███╗ █████╗ ██████╗
+██╔══██╗██╔════╝██╔════╝██║██║    ████╗ ████║██╔══██╗██╔══██╗
+███████║███████╗██║     ██║██║    ██╔████╔██║███████║██████╔╝
+██╔══██║╚════██║██║     ██║██║    ██║╚██╔╝██║██╔══██║██╔═══╝
+██║  ██║███████║╚██████╗██║██║    ██║ ╚═╝ ██║██║  ██║██║
+╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝╚═╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝
 ```
 
-To recreate this project with the same configuration:
+`asciimap` is a hobby project for experimenting with ASCII cartography in the browser.
+
+## Stack
+
+- SvelteKit (static build via `@sveltejs/adapter-static`)
+- Pretext
+- MapLibre GL JS
+
+## Development
 
 ```sh
-# recreate this project
-npx sv@0.13.0 create --template minimal --types ts --add eslint prettier vitest="usages:unit" --no-download-check --install npm .
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
+npm install
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
-
-To create a production version of your app:
+Useful commands:
 
 ```sh
+npm run check
+npm run lint
+npm run test
 npm run build
 ```
 
-You can preview the production build with `npm run preview`.
+## Static build output
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+This project now builds as a fully static site. Running `npm run build` outputs deployable files in `build/`.
+
+## GitHub Pages deployment
+
+If your site is hosted at `https://<user>.github.io/<repo>`, build with `BASE_PATH`:
+
+```sh
+BASE_PATH=/<repo> npm run build
+```
+
+Example for repo `asciimap`:
+
+```sh
+BASE_PATH=/asciimap npm run build
+```
+
+Then publish the contents of `build/`.
+
+## Aircraft feed note
+
+Aircraft data is fetched directly from OpenSky from the browser. If OpenSky blocks requests in your environment (CORS/network/rate limiting), the map still renders but the aircraft feed shows an error status.
+
+## Credits
+
+### Data sources
+
+- [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (map data)
+- [OpenFreeMap](https://openfreemap.org/) (Liberty style and hosted tiles)
+- [The OpenSky Network](https://opensky-network.org/) (`/api/states/all` live aircraft states)
+
+### Open-source libraries
+
+- [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/)
+- [Pretext (`@chenglou/pretext`)](https://www.npmjs.com/package/@chenglou/pretext)
+- [IBM Plex Mono via Fontsource (`@fontsource/ibm-plex-mono`)](https://www.npmjs.com/package/@fontsource/ibm-plex-mono)
+
+
+## License
+
+This repository is licensed under `AGPL-3.0-only`.
+
+If you run a modified public version of this app over a network, the AGPL requires that you also make the corresponding source available.

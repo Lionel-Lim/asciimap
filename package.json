@@ -2,6 +2,7 @@
 	"name": "asciimap",
 	"private": true,
 	"version": "0.0.1",
+	"license": "AGPL-3.0-only",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -18,7 +19,7 @@
 	"devDependencies": {
 		"@eslint/compat": "^2.0.3",
 		"@eslint/js": "^10.0.1",
-		"@sveltejs/adapter-auto": "^7.0.0",
+		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@types/node": "^22",

@@ -16,14 +16,7 @@ export interface AircraftState {
 	velocity: number | null;
 }
 
-export interface AircraftFeedResponse {
-	aircraft: AircraftState[];
-	cached: boolean;
-	fetchedAt: number;
-	sourceTime: number | null;
-	stale: boolean;
-}
-
+export const OPENSKY_STATES_URL = 'https://opensky-network.org/api/states/all';
 export const OPENSKY_POLL_INTERVAL_MS = 5 * 60 * 1000;
 export const OPENSKY_MAX_DEGREE_SPAN = 3.5;
 
