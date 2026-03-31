@@ -65,6 +65,16 @@ function createCellState(): CellState {
 	};
 }
 
+function resetCellState(state: CellState): void {
+	state.bestEntity = 'background';
+	state.coverage = 0;
+	state.roadDirectionsMask = 0;
+	state.bridgeDirectionsMask = 0;
+	state.railDirectionsMask = 0;
+	state.tunnelDirectionsMask = 0;
+	state.pointsUsed = 0;
+}
+
 function getGridConfig(input: AsciiRenderInput['config']) {
 	return {
 		moving: { columns: input?.grid?.moving?.columns ?? 96 },
@@ -440,10 +450,11 @@ function rasterizeCoverage(
 	buffers: RasterBuffers,
 	features: readonly Feature[],
 	input: AsciiRenderInput,
-	kind: 'water' | 'buildings' | 'greens'
+	kind: 'water' | 'buildings' | 'greens',
+	coverage: Float32Array
 ): Float32Array {
 	const { context, sampleWidth, sampleHeight, supersample } = buffers;
-	const coverage = new Float32Array((sampleWidth / supersample) * (sampleHeight / supersample));
+	coverage.fill(0);
 
 	if (features.length === 0) {
 		return coverage;
@@ -507,6 +518,32 @@ function rasterizeCoverage(
 	}
 
 	return coverage;
+}
+
+function ensureStateGrid(stateGrid: CellState[][], rows: number, cols: number): CellState[][] {
+	if (stateGrid.length !== rows || stateGrid[0]?.length !== cols) {
+		return Array.from({ length: rows }, () =>
+			Array.from({ length: cols }, () => createCellState())
+		);
+	}
+
+	for (let row = 0; row < rows; row += 1) {
+		const currentRow = stateGrid[row]!;
+		for (let column = 0; column < cols; column += 1) {
+			resetCellState(currentRow[column]!);
+		}
+	}
+
+	return stateGrid;
+}
+
+function ensureCoverageBuffer(buffer: Float32Array | null, length: number): Float32Array {
+	if (!buffer || buffer.length !== length) {
+		return new Float32Array(length);
+	}
+
+	buffer.fill(0);
+	return buffer;
 }
 
 function sampleRoadLikeFeature(
@@ -602,6 +639,10 @@ function samplePointFeature(
 
 export function createRasterAsciiRenderer() {
 	let buffers: RasterBuffers | null = null;
+	let stateGrid: CellState[][] = [];
+	let waterCoverageBuffer: Float32Array | null = null;
+	let buildingCoverageBuffer: Float32Array | null = null;
+	let greenCoverageBuffer: Float32Array | null = null;
 
 	return {
 		render(input: AsciiRenderInput): AsciiFrame {
@@ -623,18 +664,33 @@ export function createRasterAsciiRenderer() {
 				return renderAsciiFrameFallback(input);
 			}
 
-			const stateGrid: CellState[][] = Array.from({ length: size.rows }, () =>
-				Array.from({ length: size.columns }, () => createCellState())
-			);
+			const cellCount = size.rows * size.columns;
+			stateGrid = ensureStateGrid(stateGrid, size.rows, size.columns);
+			waterCoverageBuffer = ensureCoverageBuffer(waterCoverageBuffer, cellCount);
+			buildingCoverageBuffer = ensureCoverageBuffer(buildingCoverageBuffer, cellCount);
+			greenCoverageBuffer = ensureCoverageBuffer(greenCoverageBuffer, cellCount);
 
-			const waterCoverage = rasterizeCoverage(buffers, input.layers.water ?? [], input, 'water');
+			const waterCoverage = rasterizeCoverage(
+				buffers,
+				input.layers.water ?? [],
+				input,
+				'water',
+				waterCoverageBuffer
+			);
 			const buildingCoverage = rasterizeCoverage(
 				buffers,
 				input.layers.buildings ?? [],
 				input,
-				'buildings'
+				'buildings',
+				buildingCoverageBuffer
 			);
-			const greenCoverage = rasterizeCoverage(buffers, input.layers.greens ?? [], input, 'greens');
+			const greenCoverage = rasterizeCoverage(
+				buffers,
+				input.layers.greens ?? [],
+				input,
+				'greens',
+				greenCoverageBuffer
+			);
 
 			for (let row = 0; row < size.rows; row += 1) {
 				for (let column = 0; column < size.columns; column += 1) {
