@@ -11,7 +11,11 @@
 
 `asciimap` is a hobby project for experimenting with ASCII cartography in the browser.
 
-![Demo video](https://github.com/Lionel-Lim/asciimap/blob/main/demo.mp4)
+
+
+https://github.com/user-attachments/assets/aab0f1fb-d16a-45c0-9003-873fa331fd2c
+
+
 
 ## Stack
 
