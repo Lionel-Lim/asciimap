@@ -109,6 +109,7 @@
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
 	let canvas: HTMLCanvasElement;
+	let baseFrameCanvas: HTMLCanvasElement | undefined;
 	let map: MapLibreMap | undefined;
 	let resizeObserver: ResizeObserver | undefined;
 	let frameRequest = 0;
@@ -162,6 +163,7 @@
 	let lastAircraftBoundsKey = '';
 	let lastAircraftOverlayAt = 0;
 	let aircraftGlyphs: PresentedAircraftGlyph[] = [];
+	const glyphFontSizeCache: Record<string, number> = {};
 
 	function currentQualityMode(): QualityMode {
 		return qualityPreference === 'performance' ? 'moving' : 'settled';
@@ -276,8 +278,10 @@
 
 	function redrawCurrentView(): void {
 		if (frame) {
-			const presentedFrame = stampAircraftIntoFrame(frame);
-			drawFrame(presentedFrame);
+			stampAircraftIntoFrame(frame);
+			if (!blitBaseFrame()) {
+				drawFrame(frame);
+			}
 			drawAircraftGlyphs();
 			return;
 		}
@@ -467,6 +471,12 @@
 		cellWidth: number,
 		cellHeight: number
 	): number {
+		const cacheKey = `${Math.round(cellWidth * 100)}:${Math.round(cellHeight * 100)}`;
+		const cached = glyphFontSizeCache[cacheKey];
+		if (typeof cached === 'number') {
+			return cached;
+		}
+
 		const targetHeight = Math.max(8, cellHeight * 0.82);
 		context.font = `600 ${targetHeight}px ${glyphFontFamily}`;
 
@@ -480,10 +490,60 @@
 
 		const maxAllowedWidth = Math.max(1, cellWidth * 0.9);
 		if (widestGlyph <= maxAllowedWidth) {
+			glyphFontSizeCache[cacheKey] = targetHeight;
 			return targetHeight;
 		}
 
-		return Math.max(8, targetHeight * (maxAllowedWidth / widestGlyph));
+		const resolved = Math.max(8, targetHeight * (maxAllowedWidth / widestGlyph));
+		glyphFontSizeCache[cacheKey] = resolved;
+		return resolved;
+	}
+
+	function ensureCanvasContext(
+		targetCanvas: HTMLCanvasElement,
+		viewportWidth: number,
+		viewportHeight: number,
+		syncCss: boolean
+	): { context: CanvasRenderingContext2D; pixelRatio: number } | null {
+		const context = targetCanvas.getContext('2d');
+		if (!context) {
+			return null;
+		}
+
+		const pixelRatio = window.devicePixelRatio || 1;
+		const targetWidth = Math.max(1, Math.round(viewportWidth * pixelRatio));
+		const targetHeight = Math.max(1, Math.round(viewportHeight * pixelRatio));
+
+		if (syncCss) {
+			const cssWidth = `${viewportWidth}px`;
+			const cssHeight = `${viewportHeight}px`;
+			if (targetCanvas.style.width !== cssWidth) {
+				targetCanvas.style.width = cssWidth;
+			}
+			if (targetCanvas.style.height !== cssHeight) {
+				targetCanvas.style.height = cssHeight;
+			}
+		}
+
+		if (targetCanvas.width !== targetWidth || targetCanvas.height !== targetHeight) {
+			targetCanvas.width = targetWidth;
+			targetCanvas.height = targetHeight;
+		}
+
+		context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+		return { context, pixelRatio };
+	}
+
+	function getBaseFrameCanvas(): HTMLCanvasElement | null {
+		if (baseFrameCanvas) {
+			return baseFrameCanvas;
+		}
+		if (typeof document === 'undefined') {
+			return null;
+		}
+
+		baseFrameCanvas = document.createElement('canvas');
+		return baseFrameCanvas;
 	}
 
 	async function loadMapStyle(): Promise<StyleSpecification> {
@@ -580,32 +640,30 @@
 	}
 
 	function drawFrame(nextFrame: AsciiFrame): void {
-		const context = canvas.getContext('2d');
-		if (!context) {
-			return;
+		drawFrameToCanvas(canvas, nextFrame, true);
+	}
+
+	function drawFrameToCanvas(
+		targetCanvas: HTMLCanvasElement,
+		nextFrame: AsciiFrame,
+		syncCss: boolean
+	): boolean {
+		if (!stage) {
+			return false;
 		}
 
 		const viewportWidth = stage.clientWidth;
 		const viewportHeight = stage.clientHeight;
-		const pixelRatio = window.devicePixelRatio || 1;
-		const targetWidth = Math.max(1, Math.round(viewportWidth * pixelRatio));
-		const targetHeight = Math.max(1, Math.round(viewportHeight * pixelRatio));
-		const cssWidth = `${viewportWidth}px`;
-		const cssHeight = `${viewportHeight}px`;
-
-		if (canvas.style.width !== cssWidth) {
-			canvas.style.width = cssWidth;
-		}
-		if (canvas.style.height !== cssHeight) {
-			canvas.style.height = cssHeight;
+		if (viewportWidth === 0 || viewportHeight === 0) {
+			return false;
 		}
 
-		if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-			canvas.width = targetWidth;
-			canvas.height = targetHeight;
+		const prepared = ensureCanvasContext(targetCanvas, viewportWidth, viewportHeight, syncCss);
+		if (!prepared) {
+			return false;
 		}
 
-		context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+		const { context } = prepared;
 		context.clearRect(0, 0, viewportWidth, viewportHeight);
 		context.textAlign = 'center';
 		context.textBaseline = 'middle';
@@ -685,6 +743,49 @@
 		if (currentOpacity !== 1) {
 			context.globalAlpha = 1;
 		}
+
+		return true;
+	}
+
+	function renderBaseFrame(nextFrame: AsciiFrame): boolean {
+		const targetCanvas = getBaseFrameCanvas();
+		if (!targetCanvas) {
+			return false;
+		}
+
+		return drawFrameToCanvas(targetCanvas, nextFrame, false);
+	}
+
+	function blitBaseFrame(): boolean {
+		if (!stage || !baseFrameCanvas) {
+			return false;
+		}
+
+		const viewportWidth = stage.clientWidth;
+		const viewportHeight = stage.clientHeight;
+		const prepared = ensureCanvasContext(canvas, viewportWidth, viewportHeight, true);
+		if (!prepared) {
+			return false;
+		}
+
+		const { context } = prepared;
+		if (baseFrameCanvas.width !== canvas.width || baseFrameCanvas.height !== canvas.height) {
+			return false;
+		}
+
+		context.clearRect(0, 0, viewportWidth, viewportHeight);
+		context.drawImage(
+			baseFrameCanvas,
+			0,
+			0,
+			baseFrameCanvas.width,
+			baseFrameCanvas.height,
+			0,
+			0,
+			viewportWidth,
+			viewportHeight
+		);
+		return true;
 	}
 
 	function drawAircraftGlyphs(): void {
@@ -811,6 +912,7 @@
 					)
 				: [];
 		frame = nextFrame;
+		renderBaseFrame(nextFrame);
 		redrawCurrentView();
 
 		const now = performance.now();
