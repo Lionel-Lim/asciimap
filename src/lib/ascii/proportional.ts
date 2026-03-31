@@ -179,6 +179,17 @@ const neighborOffsets: readonly [number, number][] = [
 	[1, 1]
 ];
 
+const proportionalEntities: readonly ProportionalEntity[] = [
+	'roads',
+	'bridges',
+	'buildings',
+	'water',
+	'greens',
+	'rails',
+	'tunnels',
+	'cities'
+];
+
 function clamp01(value: number): number {
 	return Math.max(0, Math.min(1, value));
 }
@@ -517,17 +528,19 @@ function buildInteriorDistanceMap(
 function buildInteriorDistanceMaps(
 	frame: AsciiFrame,
 	cells: readonly AsciiFrameCell[]
-): Record<ProportionalEntity, Int16Array> {
-	return {
-		roads: buildInteriorDistanceMap(frame, cells, 'roads'),
-		bridges: buildInteriorDistanceMap(frame, cells, 'bridges'),
-		buildings: buildInteriorDistanceMap(frame, cells, 'buildings'),
-		water: buildInteriorDistanceMap(frame, cells, 'water'),
-		greens: buildInteriorDistanceMap(frame, cells, 'greens'),
-		rails: buildInteriorDistanceMap(frame, cells, 'rails'),
-		tunnels: buildInteriorDistanceMap(frame, cells, 'tunnels'),
-		cities: buildInteriorDistanceMap(frame, cells, 'cities')
-	};
+): Partial<Record<ProportionalEntity, Int16Array>> {
+	const maps: Partial<Record<ProportionalEntity, Int16Array>> = {};
+
+	for (const entity of proportionalEntities) {
+		const spec = typographySpecs[entity];
+		if (frame.dominantCounts[entity] <= 0 || (entity !== 'water' && spec.bandDepth <= 0)) {
+			continue;
+		}
+
+		maps[entity] = buildInteriorDistanceMap(frame, cells, entity);
+	}
+
+	return maps;
 }
 
 export function applyProportionalTypography(
@@ -551,7 +564,7 @@ export function applyProportionalTypography(
 		const distanceMaps = buildInteriorDistanceMaps(frame, frame.cells);
 		const resolvedCells = frame.cells.map((cell, index) => {
 			const distanceFromEdge = isProportionalEntity(cell.entity)
-				? Math.max(0, distanceMaps[cell.entity][index] ?? 0)
+				? Math.max(0, distanceMaps[cell.entity]?.[index] ?? 0)
 				: 0;
 			const resolved = resolveCellTypography(
 				cell,
