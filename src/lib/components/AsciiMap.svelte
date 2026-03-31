@@ -14,7 +14,7 @@
 		type AircraftBounds,
 		type AircraftFeedResponse
 	} from '$lib/aircraft/opensky';
-	import { type AsciiFrame, type FeatureGroups, type QualityMode } from '$lib/ascii';
+	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
 	import { createRasterAsciiRenderer } from '$lib/ascii/raster';
 	import {
@@ -106,6 +106,7 @@
 		't',
 		'c'
 	];
+	const emptyFeatures: readonly Feature[] = [];
 	type QueryPlan = {
 		key: string;
 		activeLayerIds: string[];
@@ -115,6 +116,19 @@
 		key: string;
 		featureCounts: Record<LayerToggleKey, number>;
 		groups: FeatureGroups;
+	};
+	type CityLabelCache = {
+		commands: CityLabelCommand[];
+		features: readonly Feature[];
+		height: number;
+		width: number;
+	};
+	type LandmarkLabelCache = {
+		commands: LandmarkLabelCommand[];
+		features: readonly Feature[];
+		height: number;
+		width: number;
+		zoom: number;
 	};
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
@@ -177,6 +191,8 @@
 	let queryPlanCache: QueryPlan | null = null;
 	let visibleFeatureCache: VisibleFeatureCache | null = null;
 	let visibleFeatureVersion = 0;
+	let cityLabelCache: CityLabelCache | null = null;
+	let landmarkLabelCache: LandmarkLabelCache | null = null;
 
 	function currentQualityMode(): QualityMode {
 		return qualityPreference === 'performance' ? 'moving' : 'settled';
@@ -229,6 +245,65 @@
 	function invalidateVisibleFeatureCache(): void {
 		visibleFeatureVersion += 1;
 		visibleFeatureCache = null;
+	}
+
+	function resolveCityCommands(
+		features: readonly Feature[],
+		viewportWidth: number,
+		viewportHeight: number
+	): CityLabelCommand[] {
+		if (
+			cityLabelCache?.features === features &&
+			cityLabelCache.width === viewportWidth &&
+			cityLabelCache.height === viewportHeight
+		) {
+			return cityLabelCache.commands;
+		}
+
+		const commands = buildCityLabelCommands(features, {
+			width: viewportWidth,
+			height: viewportHeight
+		});
+		cityLabelCache = {
+			commands,
+			features,
+			height: viewportHeight,
+			width: viewportWidth
+		};
+		return commands;
+	}
+
+	function resolveLandmarkCommands(
+		features: readonly Feature[],
+		viewportWidth: number,
+		viewportHeight: number,
+		zoom: number
+	): LandmarkLabelCommand[] {
+		if (
+			landmarkLabelCache?.features === features &&
+			landmarkLabelCache.width === viewportWidth &&
+			landmarkLabelCache.height === viewportHeight &&
+			landmarkLabelCache.zoom === zoom
+		) {
+			return landmarkLabelCache.commands;
+		}
+
+		const commands = buildLandmarkLabelCommands(
+			features,
+			{
+				width: viewportWidth,
+				height: viewportHeight
+			},
+			zoom
+		);
+		landmarkLabelCache = {
+			commands,
+			features,
+			height: viewportHeight,
+			width: viewportWidth,
+			zoom
+		};
+		return commands;
 	}
 
 	function currentAircraftBounds(): AircraftBounds | null {
@@ -962,19 +1037,14 @@
 			waterDetail
 		});
 		cityLabelCommands = cityLabelsVisibleAtZoom(mapZoom)
-			? buildCityLabelCommands(layers.cities ?? [], {
-					width: viewportWidth,
-					height: viewportHeight
-				})
+			? resolveCityCommands(layers.cities ?? emptyFeatures, viewportWidth, viewportHeight)
 			: [];
 		landmarkLabelCommands =
 			layerState.landmarks && mapZoom >= LANDMARK_LABEL_MIN_ZOOM
-				? buildLandmarkLabelCommands(
-						layers.landmarks,
-						{
-							width: viewportWidth,
-							height: viewportHeight
-						},
+				? resolveLandmarkCommands(
+						layers.landmarks ?? emptyFeatures,
+						viewportWidth,
+						viewportHeight,
 						mapZoom
 					)
 				: [];
