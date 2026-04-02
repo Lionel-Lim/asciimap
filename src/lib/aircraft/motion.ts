@@ -1,4 +1,4 @@
-import { OPENSKY_POLL_INTERVAL_MS, type AircraftState } from './opensky';
+import { AIRCRAFT_POLL_INTERVAL_MS, type AircraftState } from './feed';
 
 export interface AircraftTrack {
 	blendDurationMs: number;
@@ -16,7 +16,7 @@ export interface DisplayAircraftState extends AircraftState {
 }
 
 export const AIRCRAFT_BLEND_DURATION_MS = 12_000;
-const MAX_EXTRAPOLATION_MS = OPENSKY_POLL_INTERVAL_MS;
+const MAX_EXTRAPOLATION_MS = AIRCRAFT_POLL_INTERVAL_MS;
 const METERS_PER_DEGREE_LATITUDE = 111_320;
 
 function clamp01(value: number): number {

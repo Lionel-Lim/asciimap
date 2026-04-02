@@ -11,9 +11,7 @@
 
 `asciimap` is a hobby project for experimenting with ASCII cartography in the browser.
 
-
 https://github.com/user-attachments/assets/aab0f1fb-d16a-45c0-9003-873fa331fd2c
-
 
 Try the live demo at [https://lionel-lim.github.io/asciimap/](https://lionel-lim.github.io/asciimap/).
 
@@ -41,7 +39,9 @@ npm run build
 
 ## Aircraft feed note
 
-Aircraft data is fetched directly from OpenSky from the browser. If OpenSky blocks requests in your environment (CORS/network/rate limiting), the map still renders but the aircraft feed shows an error status.
+Aircraft data is fetched directly from Airplanes.live in the browser using its `/v2/point/{lat}/{lon}/{radius}` endpoint. The app converts the current map viewport into a center point and nautical-mile radius, so it remains deployable on GitHub Pages without a proxy.
+
+Airplanes.live currently allows unauthenticated browser access for non-commercial use, documents a `1 request / second` rate limit, and provides no SLA or uptime guarantee. If the feed is unavailable or rate-limited, the map still renders and the aircraft layer shows an error status.
 
 ## Credits
 
@@ -49,14 +49,13 @@ Aircraft data is fetched directly from OpenSky from the browser. If OpenSky bloc
 
 - [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (map data)
 - [OpenFreeMap](https://openfreemap.org/) (Liberty style and hosted tiles)
-- [The OpenSky Network](https://opensky-network.org/) (`/api/states/all` live aircraft states)
+- [Airplanes.live](https://airplanes.live/api-guide/) (`/v2/point/{lat}/{lon}/{radius}` live aircraft states)
 
 ### Open-source libraries
 
 - [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/)
 - [Pretext (`@chenglou/pretext`)](https://www.npmjs.com/package/@chenglou/pretext)
 - [IBM Plex Mono via Fontsource (`@fontsource/ibm-plex-mono`)](https://www.npmjs.com/package/@fontsource/ibm-plex-mono)
-
 
 ## License
 

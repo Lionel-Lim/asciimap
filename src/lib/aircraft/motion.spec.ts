@@ -5,7 +5,7 @@ import {
 	extrapolateAircraftPosition,
 	resolveDisplayAircraftState
 } from './motion';
-import type { AircraftState } from './opensky';
+import type { AircraftState } from './feed';
 
 const sampleAircraft: AircraftState = {
 	callsign: 'BAW123',

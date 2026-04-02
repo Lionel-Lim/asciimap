@@ -9,13 +9,16 @@
 	} from '$lib/aircraft/motion';
 	import { stampAircraftGlyphs, type PresentedAircraftGlyph } from '$lib/aircraft/stamp';
 	import {
-		OPENSKY_STATES_URL,
-		OPENSKY_POLL_INTERVAL_MS,
+		AIRCRAFT_MIN_REQUEST_GAP_MS,
+		AIRCRAFT_POLL_INTERVAL_MS,
 		aircraftBoundsKey,
-		clampOpenSkyBounds,
-		parseOpenSkyStates,
+		buildAircraftFeedQuery,
+		buildAircraftFeedUrl,
+		normalizeAircraftBounds,
+		parseAircraftFeedStates,
+		resolveAircraftFeedSampledAt,
 		type AircraftBounds
-	} from '$lib/aircraft/opensky';
+	} from '$lib/aircraft/feed';
 	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
 	import { createRasterAsciiRenderer } from '$lib/ascii/raster';
@@ -144,6 +147,14 @@
 		width: number;
 		zoom: number;
 	};
+	type AircraftFeedIssueCode =
+		| 'none'
+		| 'rate_limit'
+		| 'network'
+		| 'provider_unavailable'
+		| 'bad_response'
+		| 'provider_error'
+		| 'unknown';
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
 	let canvas: HTMLCanvasElement;
@@ -188,13 +199,18 @@
 	let showAircraft = $state(true);
 	let aircraftCount = $state(0);
 	let aircraftVisibleCount = $state(0);
+	let aircraftFeedIssueCode = $state<AircraftFeedIssueCode>('none');
+	let aircraftFeedMessage = $state('');
 	let aircraftFeedStale = $state(false);
-	let aircraftFeedError = $state('');
+	let aircraftFeedEmpty = $state(false);
 	let aircraftFetchedAt = $state<number | null>(null);
 	let aircraftLoading = $state(false);
 	let aircraftTracks = new Map<string, AircraftTrack>();
 	let aircraftAnimationFrame = 0;
 	let aircraftPollTimer: number | undefined;
+	let aircraftUiTimer: number | undefined;
+	let aircraftCooldownUntil = 0;
+	let aircraftUiNow = $state(Date.now());
 	let lastAircraftRequestAt = 0;
 	let lastAircraftViewportFetchAt = 0;
 	let lastAircraftBoundsKey = '';
@@ -325,7 +341,7 @@
 		}
 
 		const bounds = map.getBounds();
-		return clampOpenSkyBounds({
+		return normalizeAircraftBounds({
 			lamin: bounds.getSouth(),
 			lomin: bounds.getWest(),
 			lamax: bounds.getNorth(),
@@ -385,7 +401,7 @@
 		}
 	}
 
-	function scheduleAircraftPolling(delay = OPENSKY_POLL_INTERVAL_MS): void {
+	function scheduleAircraftPolling(delay = AIRCRAFT_POLL_INTERVAL_MS): void {
 		stopAircraftPolling();
 		if (!showAircraft) {
 			return;
@@ -394,7 +410,7 @@
 		aircraftPollTimer = window.setTimeout(() => {
 			aircraftPollTimer = undefined;
 			if (document.visibilityState === 'hidden') {
-				scheduleAircraftPolling(OPENSKY_POLL_INTERVAL_MS);
+				scheduleAircraftPolling(AIRCRAFT_POLL_INTERVAL_MS);
 				return;
 			}
 
@@ -449,19 +465,134 @@
 		if (!showAircraft) {
 			return 'Off';
 		}
-		if (aircraftFeedError) {
-			return 'Error';
-		}
 		if (aircraftLoading && aircraftFetchedAt === null) {
 			return 'Loading';
+		}
+		if (aircraftFeedStale && aircraftFetchedAt !== null) {
+			return aircraftFeedMessage
+				? `Stale (${formatRelativeTime(aircraftFetchedAt)}): ${aircraftFeedMessage}`
+				: `Stale (${formatRelativeTime(aircraftFetchedAt)})`;
+		}
+		if (aircraftFeedIssueCode !== 'none') {
+			return aircraftFeedMessage;
+		}
+		if (aircraftFeedEmpty && aircraftFetchedAt !== null) {
+			return `No aircraft in view (${formatRelativeTime(aircraftFetchedAt)})`;
 		}
 		if (aircraftFeedStale) {
 			return 'Stale data';
 		}
 		if (aircraftFetchedAt !== null) {
-			return 'Live';
+			return `Live (${formatRelativeTime(aircraftFetchedAt)})`;
 		}
 		return 'Waiting';
+	}
+
+	function formatRelativeTime(timestamp: number): string {
+		const elapsedMs = Math.max(0, aircraftUiNow - timestamp);
+		if (elapsedMs < 5_000) {
+			return 'just now';
+		}
+		if (elapsedMs < 60_000) {
+			return `${Math.round(elapsedMs / 1_000)}s ago`;
+		}
+		if (elapsedMs < 3_600_000) {
+			return `${Math.round(elapsedMs / 60_000)}m ago`;
+		}
+
+		return `${Math.round(elapsedMs / 3_600_000)}h ago`;
+	}
+
+	function formatDuration(ms: number): string {
+		if (ms < 1_000) {
+			return `${(ms / 1_000).toFixed(1)}s`;
+		}
+		if (ms < 10_000) {
+			return `${(ms / 1_000).toFixed(1)}s`;
+		}
+		if (ms < 60_000) {
+			return `${Math.ceil(ms / 1_000)}s`;
+		}
+
+		return `${Math.ceil(ms / 60_000)}m`;
+	}
+
+	function aircraftCooldownRemainingMs(): number {
+		return Math.max(0, aircraftCooldownUntil - aircraftUiNow);
+	}
+
+	function aircraftFetchDisabled(): boolean {
+		return !showAircraft || aircraftLoading || aircraftCooldownRemainingMs() > 0;
+	}
+
+	function aircraftActionLabel(): string {
+		if (!showAircraft) {
+			return 'Aircraft Off';
+		}
+		if (aircraftLoading) {
+			return 'Fetching aircraft…';
+		}
+
+		const cooldownRemainingMs = aircraftCooldownRemainingMs();
+		if (cooldownRemainingMs > 0) {
+			return `Wait ${formatDuration(cooldownRemainingMs)}`;
+		}
+
+		return 'Fetch Aircraft Here';
+	}
+
+	function aircraftActionHint(): string {
+		if (!showAircraft) {
+			return 'Enable the aircraft layer to resume polling and manual fetches.';
+		}
+		if (aircraftLoading) {
+			return 'Refreshing aircraft for the current map view.';
+		}
+
+		const cooldownRemainingMs = aircraftCooldownRemainingMs();
+		if (cooldownRemainingMs > 0) {
+			return `Cooling down for ${formatDuration(cooldownRemainingMs)} to respect Airplanes.live's 1 request/second limit.`;
+		}
+		if (aircraftFeedStale && aircraftFetchedAt !== null) {
+			return `${aircraftFeedMessage || 'Aircraft refresh failed.'} Showing stale data from ${formatRelativeTime(aircraftFetchedAt)}.`;
+		}
+		if (aircraftFeedIssueCode !== 'none') {
+			return aircraftFeedMessage;
+		}
+		if (aircraftFeedEmpty && aircraftFetchedAt !== null) {
+			return `No aircraft found in the current map view as of ${formatRelativeTime(aircraftFetchedAt)}.`;
+		}
+		if (aircraftFetchedAt !== null) {
+			return `Last refreshed ${formatRelativeTime(aircraftFetchedAt)}. Fetches aircraft for the current map view immediately.`;
+		}
+
+		return 'Fetches aircraft for the current map view immediately.';
+	}
+
+	function aircraftActionHintTone(): 'muted' | 'success' | 'warning' | 'error' {
+		if (!showAircraft) {
+			return 'muted';
+		}
+		if (aircraftFeedIssueCode !== 'none') {
+			return aircraftFeedStale ? 'warning' : 'error';
+		}
+		if (aircraftCooldownRemainingMs() > 0) {
+			return 'warning';
+		}
+		if (aircraftFeedEmpty || aircraftFetchedAt !== null) {
+			return 'success';
+		}
+
+		return 'muted';
+	}
+
+	function setAircraftFeedIssue(code: AircraftFeedIssueCode, message: string): void {
+		aircraftFeedIssueCode = code;
+		aircraftFeedMessage = message;
+	}
+
+	function clearAircraftFeedIssue(): void {
+		setAircraftFeedIssue('none', '');
 	}
 
 	function updateAircraftVisibility(checked: boolean): void {
@@ -492,13 +623,17 @@
 		}
 
 		const now = Date.now();
+		if (now < aircraftCooldownUntil) {
+			return;
+		}
+
 		const boundsKey = aircraftBoundsKey(bounds);
 		const sameBounds = boundsKey === lastAircraftBoundsKey;
 		if (
 			!force &&
 			((sameBounds &&
 				lastAircraftRequestAt !== 0 &&
-				now - lastAircraftRequestAt < OPENSKY_POLL_INTERVAL_MS) ||
+				now - lastAircraftRequestAt < AIRCRAFT_POLL_INTERVAL_MS) ||
 				(!sameBounds &&
 					lastAircraftViewportFetchAt !== 0 &&
 					now - lastAircraftViewportFetchAt < aircraftViewportRefreshMs))
@@ -507,30 +642,49 @@
 		}
 
 		aircraftLoading = true;
+		aircraftCooldownUntil = now + AIRCRAFT_MIN_REQUEST_GAP_MS;
 		lastAircraftRequestAt = now;
 		if (!sameBounds) {
 			lastAircraftViewportFetchAt = now;
 		}
 		try {
-			const url = new URL(OPENSKY_STATES_URL);
-			url.searchParams.set('lamin', `${bounds.lamin}`);
-			url.searchParams.set('lomin', `${bounds.lomin}`);
-			url.searchParams.set('lamax', `${bounds.lamax}`);
-			url.searchParams.set('lomax', `${bounds.lomax}`);
+			const url = buildAircraftFeedUrl(buildAircraftFeedQuery(bounds));
 
 			const response = await fetch(url, {
 				headers: { accept: 'application/json' }
 			});
-			const payload = await response.json();
+			const rawResponse = await response.text();
 			if (!response.ok) {
-				throw new Error(`OpenSky responded with ${response.status}.`);
+				if (response.status === 429) {
+					throw new Error('Airplanes.live rate limit reached. Try again in a moment.');
+				}
+				if (response.status >= 500) {
+					throw new Error('Airplanes.live is temporarily unavailable. Try again shortly.');
+				}
+
+				throw new Error(`Airplanes.live responded with ${response.status}.`);
+			}
+			let payload: unknown;
+			try {
+				payload = JSON.parse(rawResponse);
+			} catch {
+				throw new Error(
+					/rate limit/i.test(rawResponse)
+						? 'Airplanes.live rate limit reached. Try again in a moment.'
+						: 'Airplanes.live returned an unreadable response.'
+				);
+			}
+			if (
+				payload &&
+				typeof payload === 'object' &&
+				typeof (payload as { msg?: unknown }).msg === 'string' &&
+				(payload as { msg: string }).msg !== 'No error'
+			) {
+				throw new Error(`Airplanes.live: ${(payload as { msg: string }).msg}`);
 			}
 
-			const aircraft = parseOpenSkyStates(payload);
-			const payloadTime =
-				payload && typeof payload === 'object' ? (payload as { time?: unknown }).time : null;
-			const sourceTime = typeof payloadTime === 'number' ? payloadTime : null;
-			const sampledAt = sourceTime !== null ? sourceTime * 1000 : now;
+			const aircraft = parseAircraftFeedStates(payload);
+			const sampledAt = resolveAircraftFeedSampledAt(payload, now);
 			aircraftTracks = buildAircraftTracks(
 				aircraftTracks,
 				aircraft,
@@ -539,32 +693,41 @@
 				AIRCRAFT_BLEND_DURATION_MS
 			);
 			aircraftCount = aircraft.length;
+			aircraftFeedEmpty = aircraft.length === 0;
 			aircraftFeedStale = false;
-			aircraftFeedError = '';
+			clearAircraftFeedIssue();
 			aircraftFetchedAt = now;
 			lastAircraftBoundsKey = boundsKey;
 			startAircraftAnimation();
 			redrawCurrentView();
 		} catch (error) {
 			const hadTrackedAircraft = aircraftTracks.size > 0;
+			aircraftFeedEmpty = false;
 			if (
 				error instanceof TypeError &&
 				/(networkerror|failed to fetch|load failed)/i.test(error.message)
 			) {
-				aircraftFeedError = hadTrackedAircraft
-					? ''
-					: 'OpenSky feed is unreachable from the browser (network or CORS restriction).';
+				setAircraftFeedIssue('network', 'Airplanes.live feed is unreachable from the browser.');
 			} else {
-				aircraftFeedError = hadTrackedAircraft
-					? ''
-					: error instanceof Error
-						? error.message
-						: 'Unable to refresh the aircraft feed.';
+				const message =
+					error instanceof Error ? error.message : 'Unable to refresh the aircraft feed.';
+
+				if (/rate limit/i.test(message)) {
+					setAircraftFeedIssue('rate_limit', message);
+				} else if (/temporarily unavailable|responded with 5/i.test(message)) {
+					setAircraftFeedIssue('provider_unavailable', message);
+				} else if (/unreadable response/i.test(message)) {
+					setAircraftFeedIssue('bad_response', message);
+				} else if (/responded with \d+/i.test(message)) {
+					setAircraftFeedIssue('provider_error', message);
+				} else {
+					setAircraftFeedIssue('unknown', message);
+				}
 			}
 			aircraftFeedStale = hadTrackedAircraft;
 		} finally {
 			aircraftLoading = false;
-			scheduleAircraftPolling(OPENSKY_POLL_INTERVAL_MS);
+			scheduleAircraftPolling(AIRCRAFT_POLL_INTERVAL_MS);
 		}
 	}
 
@@ -1157,6 +1320,9 @@
 					onFontsReady?.();
 				});
 				document.fonts?.addEventListener?.('loadingdone', onFontsReady);
+				aircraftUiTimer = window.setInterval(() => {
+					aircraftUiNow = Date.now();
+				}, 250);
 			} catch (error) {
 				errorMessage = friendlyMapError(
 					error instanceof Error ? error.message : 'Unable to initialize the browser map runtime.'
@@ -1170,6 +1336,9 @@
 			}
 			stopAircraftPolling();
 			stopAircraftAnimation();
+			if (aircraftUiTimer !== undefined) {
+				window.clearInterval(aircraftUiTimer);
+			}
 			if (onFontsReady) {
 				document.fonts?.removeEventListener?.('loadingdone', onFontsReady);
 			}
@@ -1307,12 +1476,20 @@
 				<button
 					type="button"
 					class="action-button"
-					disabled={!showAircraft || aircraftLoading}
+					disabled={aircraftFetchDisabled()}
 					onclick={fetchAircraftHere}
 				>
-					{aircraftLoading ? 'Fetching aircraft…' : 'Fetch Aircraft Here'}
+					{aircraftActionLabel()}
 				</button>
-				<p class="action-hint">Fetches planes for the current map view immediately.</p>
+				<p
+					class="action-hint"
+					class:success={aircraftActionHintTone() === 'success'}
+					class:warning={aircraftActionHintTone() === 'warning'}
+					class:error={aircraftActionHintTone() === 'error'}
+					aria-live="polite"
+				>
+					{aircraftActionHint()}
+				</p>
 			</div>
 		</section>
 
@@ -1466,7 +1643,7 @@
 				</div>
 				<div>
 					<dt>Aircraft feed</dt>
-					<dd>{aircraftFeedError || aircraftFeedStatus()}</dd>
+					<dd>{aircraftFeedStatus()}</dd>
 				</div>
 				<div>
 					<dt>Basemap</dt>
@@ -1477,8 +1654,8 @@
 
 		<p class="footnote">
 			Map data © OpenStreetMap contributors, served via OpenFreeMap / OpenMapTiles (Liberty style,
-			including Natural Earth shaded relief). Aircraft data © The OpenSky Network. Built with
-			SvelteKit, Svelte, Vite, MapLibre GL JS, Pretext, and IBM Plex Mono (@fontsource).
+			including Natural Earth shaded relief). Aircraft data © Airplanes.live. Built with SvelteKit,
+			Svelte, Vite, MapLibre GL JS, Pretext, and IBM Plex Mono (@fontsource).
 		</p>
 		<p class="byline">by {authorName}</p>
 	</aside>
@@ -1792,7 +1969,7 @@
 	.action-button:disabled {
 		opacity: 0.6;
 		transform: none;
-		cursor: progress;
+		cursor: not-allowed;
 	}
 
 	.action-hint {
@@ -1800,6 +1977,18 @@
 		font-size: 0.82rem;
 		line-height: 1.45;
 		color: rgba(237, 247, 242, 0.62);
+	}
+
+	.action-hint.success {
+		color: rgba(155, 226, 121, 0.88);
+	}
+
+	.action-hint.warning {
+		color: rgba(255, 213, 150, 0.88);
+	}
+
+	.action-hint.error {
+		color: rgba(255, 196, 169, 0.92);
 	}
 
 	.range-head,
