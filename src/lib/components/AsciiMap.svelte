@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { assets } from '$app/paths';
 	import { onMount } from 'svelte';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import {
@@ -1396,10 +1397,10 @@
 			<div class="social-row" aria-label="Creator badges">
 				<a
 					class="social-badge"
-					href="https://github.com/Lionel-Lim/"
+					href="https://github.com/Lionel-Lim/asciimap"
 					target="_blank"
 					rel="noreferrer"
-					aria-label="DY Lim on GitHub"
+					aria-label="asciimap on GitHub"
 					title="GitHub"
 				>
 					<svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1407,6 +1408,16 @@
 							d="M12 2C6.48 2 2 6.59 2 12.26c0 4.54 2.87 8.39 6.84 9.75.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.22-3.37-1.22-.46-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .08 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.64-1.37-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.72 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 6.84c.85 0 1.7.12 2.49.36 1.9-1.32 2.74-1.05 2.74-1.05.56 1.41.21 2.46.11 2.72.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.81-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.27 10.27 0 0 0 22 12.26C22 6.59 17.52 2 12 2Z"
 						/>
 					</svg>
+				</a>
+				<a
+					class="social-badge hacker-news-badge"
+					href="https://news.ycombinator.com/item?id=47594637"
+					target="_blank"
+					rel="noreferrer"
+					aria-label="asciimap on Hacker News"
+					title="Hacker News"
+				>
+					<img src={`${assets}/icons/social/hacker-news.png`} alt="" aria-hidden="true" />
 				</a>
 				<a
 					class="social-badge linkedin-badge"
@@ -1858,6 +1869,13 @@
 		width: 1.15rem;
 		height: 1.15rem;
 		fill: currentColor;
+	}
+
+	.social-badge img {
+		width: 1.15rem;
+		height: 1.15rem;
+		object-fit: contain;
+		display: block;
 	}
 
 	.panel-section {
