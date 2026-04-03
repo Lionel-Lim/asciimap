@@ -10,6 +10,10 @@ interface CityLabelSpec {
 	weight: number;
 }
 
+interface CityLabelOptions {
+	fontFamily?: string;
+}
+
 export interface CityLabelCommand {
 	font: string;
 	height: number;
@@ -89,9 +93,11 @@ function readPoint(feature: Feature): readonly [number, number] | null {
 
 export function buildCityLabelCommands(
 	features: readonly Feature[],
-	viewport: { width: number; height: number }
+	viewport: { width: number; height: number },
+	options?: CityLabelOptions
 ): CityLabelCommand[] {
 	const candidates: CityLabelCommand[] = [];
+	const fontFamily = options?.fontFamily ?? cityLabelFontFamily;
 
 	for (const feature of features) {
 		const name = readCityName(feature);
@@ -107,7 +113,7 @@ export function buildCityLabelCommands(
 
 		const layerId = readLayerId(feature);
 		const spec = cityLabelSpecs[layerId] ?? cityLabelSpecs.label_town;
-		const font = `${spec.weight} ${spec.fontSize}px ${cityLabelFontFamily}`;
+		const font = `${spec.weight} ${spec.fontSize}px ${fontFamily}`;
 		const { height, width } = measureTextBlock(name, font, spec.fontSize * 1.25);
 		candidates.push({
 			font,

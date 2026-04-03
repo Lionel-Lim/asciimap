@@ -13,6 +13,10 @@ interface LandmarkLabelSpec {
 	weight: number;
 }
 
+interface LandmarkLabelOptions {
+	fontFamily?: string;
+}
+
 export interface LandmarkLabelCommand {
 	font: string;
 	height: number;
@@ -100,13 +104,15 @@ function readPoint(feature: Feature): readonly [number, number] | null {
 export function buildLandmarkLabelCommands(
 	features: readonly Feature[] | undefined,
 	viewport: { width: number; height: number },
-	zoom: number
+	zoom: number,
+	options?: LandmarkLabelOptions
 ): LandmarkLabelCommand[] {
 	if (!features || features.length === 0) {
 		return [];
 	}
 
 	const candidates: LandmarkLabelCommand[] = [];
+	const fontFamily = options?.fontFamily ?? landmarkFontFamily;
 	for (const feature of features) {
 		const layerId = readLayerId(feature);
 		const spec = landmarkLabelSpecs[layerId];
@@ -126,7 +132,7 @@ export function buildLandmarkLabelCommands(
 		}
 
 		const fontSize = Math.max(11, 14 * spec.fontSizeMultiplier);
-		const font = `${spec.weight} ${fontSize}px ${landmarkFontFamily}`;
+		const font = `${spec.weight} ${fontSize}px ${fontFamily}`;
 		const { height, width } = measureTextBlock(name, font, fontSize * 1.2);
 		if (width < 18 || width > viewport.width * 0.4) {
 			continue;
