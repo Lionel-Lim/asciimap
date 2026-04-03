@@ -2,13 +2,18 @@
 	import { assets } from '$app/paths';
 	import { onMount } from 'svelte';
 	import 'maplibre-gl/dist/maplibre-gl.css';
+	import TextAsciiFrame from '$lib/components/TextAsciiFrame.svelte';
 	import {
 		AIRCRAFT_BLEND_DURATION_MS,
 		buildAircraftTracks,
 		resolveDisplayedAircraft,
 		type AircraftTrack
 	} from '$lib/aircraft/motion';
-	import { stampAircraftGlyphs, type PresentedAircraftGlyph } from '$lib/aircraft/stamp';
+	import {
+		stampAircraftGlyphs,
+		type PresentedAircraftGlyph,
+		type ProjectedAircraftMarker
+	} from '$lib/aircraft/stamp';
 	import {
 		AIRCRAFT_MIN_REQUEST_GAP_MS,
 		AIRCRAFT_POLL_INTERVAL_MS,
@@ -21,6 +26,7 @@
 		type AircraftBounds
 	} from '$lib/aircraft/feed';
 	import { type AsciiFrame, type Feature, type FeatureGroups, type QualityMode } from '$lib/ascii';
+	import { composeTextModeFrame, TEXT_AIRCRAFT_GLYPHS } from '$lib/ascii/textComposer';
 	import { applyProportionalTypography } from '$lib/ascii/proportional';
 	import { createRasterAsciiRenderer } from '$lib/ascii/raster';
 	import {
@@ -88,8 +94,13 @@
 		['performance', 'Performance'],
 		['quality', 'Quality']
 	] as const;
+	const rendererModeOptions = [
+		['canvas', 'Canvas'],
+		['text', 'Text']
+	] as const;
 	const authorName = 'DY';
 	const rasterRenderer = createRasterAsciiRenderer();
+	const monoFontFamily = '"IBM Plex Mono", "Courier New", monospace';
 	const glyphFontFamily = 'Georgia, Palatino, "Times New Roman", serif';
 	const aircraftMarkerGlyph = 'A';
 	const aircraftOverlayFrameMs = 1000 / 30;
@@ -113,7 +124,7 @@
 		'c'
 	];
 	const emptyFeatures: readonly Feature[] = [];
-	const layerGlyphs: Record<LayerToggleKey | 'aircraft', { color: string; glyph: string }> = {
+	const canvasLayerGlyphs: Record<LayerToggleKey | 'aircraft', { color: string; glyph: string }> = {
 		roads: { color: entityColors.roads, glyph: 'R / r' },
 		bridges: { color: entityColors.bridges, glyph: 'X / x' },
 		buildings: { color: entityColors.buildings, glyph: 'B / b' },
@@ -125,11 +136,24 @@
 		landmarks: { color: entityColors.points, glyph: 'Aa' },
 		aircraft: { color: entityColors.points, glyph: 'aAa' }
 	};
+	const textLayerGlyphs: Record<LayerToggleKey | 'aircraft', { color: string; glyph: string }> = {
+		roads: { color: entityColors.roads, glyph: '- | / \\ +' },
+		bridges: { color: entityColors.bridges, glyph: '= ! / \\ #' },
+		buildings: { color: entityColors.buildings, glyph: '. : * #' },
+		water: { color: entityColors.water, glyph: '. ~ =' },
+		greens: { color: entityColors.greens, glyph: '. , ; %' },
+		rails: { color: entityColors.rails, glyph: 'r / R' },
+		tunnels: { color: entityColors.tunnels, glyph: 'u / U' },
+		cities: { color: entityColors.cities, glyph: 'c / C' },
+		landmarks: { color: entityColors.points, glyph: 'label' },
+		aircraft: { color: entityColors.points, glyph: TEXT_AIRCRAFT_GLYPHS.join(' ') }
+	};
 	type QueryPlan = {
 		key: string;
 		activeLayerIds: string[];
 		layerIdToBucket: Record<string, LayerToggleKey>;
 	};
+	type RendererMode = 'canvas' | 'text';
 	type VisibleFeatureCache = {
 		key: string;
 		featureCounts: Record<LayerToggleKey, number>;
@@ -138,15 +162,25 @@
 	type CityLabelCache = {
 		commands: CityLabelCommand[];
 		features: readonly Feature[];
+		fontFamily: string;
 		height: number;
 		width: number;
 	};
 	type LandmarkLabelCache = {
 		commands: LandmarkLabelCommand[];
 		features: readonly Feature[];
+		fontFamily: string;
 		height: number;
 		width: number;
 		zoom: number;
+	};
+	type PanPreview = {
+		active: boolean;
+		offsetX: number;
+		offsetY: number;
+		pointerId: number | null;
+		startX: number;
+		startY: number;
 	};
 	type AircraftFeedIssueCode =
 		| 'none'
@@ -158,7 +192,7 @@
 		| 'unknown';
 	let stage: HTMLDivElement;
 	let mapHost: HTMLDivElement;
-	let canvas: HTMLCanvasElement;
+	let canvas = $state<HTMLCanvasElement | undefined>();
 	let baseFrameCanvas: HTMLCanvasElement | undefined;
 	let map: MapLibreMap | undefined;
 	let resizeObserver: ResizeObserver | undefined;
@@ -166,6 +200,7 @@
 	let frame = $state<AsciiFrame | null>(null);
 	let errorMessage = $state('');
 	let isLoaded = $state(false);
+	let renderMode = $state<RendererMode>('canvas');
 	let qualityPreference = $state<RenderPreference>('auto');
 	let roadDetail = $state(DEFAULT_ROAD_DETAIL);
 	let waterDetail = $state(DEFAULT_WATER_DETAIL);
@@ -217,6 +252,17 @@
 	let lastAircraftBoundsKey = '';
 	let lastAircraftOverlayAt = 0;
 	let aircraftGlyphs: PresentedAircraftGlyph[] = [];
+	let textDisplayFrame = $state<AsciiFrame | null>(null);
+	let spacePanPressed = $state(false);
+	let textStageActive = $state(false);
+	let panPreview = $state<PanPreview>({
+		active: false,
+		offsetX: 0,
+		offsetY: 0,
+		pointerId: null,
+		startX: 0,
+		startY: 0
+	});
 	const glyphFontSizeCache: Record<string, number> = {};
 	let queryPlanCache: QueryPlan | null = null;
 	let visibleFeatureCache: VisibleFeatureCache | null = null;
@@ -230,6 +276,20 @@
 
 	function currentMapZoom(): number {
 		return map?.getZoom() ?? INITIAL_VIEW.zoom;
+	}
+
+	function currentLabelFontFamily(): string {
+		return renderMode === 'text' ? monoFontFamily : '';
+	}
+
+	function currentLayerGlyphs(): Record<LayerToggleKey | 'aircraft', { color: string; glyph: string }> {
+		return renderMode === 'text' ? textLayerGlyphs : canvasLayerGlyphs;
+	}
+
+	function currentGlyphSummary(): string {
+		return renderMode === 'text'
+			? `-|/\\+ · =!/\\# · .:*# · .~= · .,;% · r/R · u/U · ${TEXT_AIRCRAFT_GLYPHS.join(' ')} + labels`
+			: 'R/r · X/x · B/b · W/w · G/g · R/r · U/u · aAa + labels';
 	}
 
 	function cityLabelsVisibleAtZoom(zoom: number): boolean {
@@ -282,21 +342,28 @@
 		viewportWidth: number,
 		viewportHeight: number
 	): CityLabelCommand[] {
+		const fontFamily = currentLabelFontFamily();
 		if (
 			cityLabelCache?.features === features &&
 			cityLabelCache.width === viewportWidth &&
-			cityLabelCache.height === viewportHeight
+			cityLabelCache.height === viewportHeight &&
+			cityLabelCache.fontFamily === fontFamily
 		) {
 			return cityLabelCache.commands;
 		}
 
-		const commands = buildCityLabelCommands(features, {
-			width: viewportWidth,
-			height: viewportHeight
-		});
+		const commands = buildCityLabelCommands(
+			features,
+			{
+				width: viewportWidth,
+				height: viewportHeight
+			},
+			fontFamily ? { fontFamily } : undefined
+		);
 		cityLabelCache = {
 			commands,
 			features,
+			fontFamily,
 			height: viewportHeight,
 			width: viewportWidth
 		};
@@ -309,11 +376,13 @@
 		viewportHeight: number,
 		zoom: number
 	): LandmarkLabelCommand[] {
+		const fontFamily = currentLabelFontFamily();
 		if (
 			landmarkLabelCache?.features === features &&
 			landmarkLabelCache.width === viewportWidth &&
 			landmarkLabelCache.height === viewportHeight &&
-			landmarkLabelCache.zoom === zoom
+			landmarkLabelCache.zoom === zoom &&
+			landmarkLabelCache.fontFamily === fontFamily
 		) {
 			return landmarkLabelCache.commands;
 		}
@@ -324,11 +393,13 @@
 				width: viewportWidth,
 				height: viewportHeight
 			},
-			zoom
+			zoom,
+			fontFamily ? { fontFamily } : undefined
 		);
 		landmarkLabelCache = {
 			commands,
 			features,
+			fontFamily,
 			height: viewportHeight,
 			width: viewportWidth,
 			zoom
@@ -351,7 +422,7 @@
 	}
 
 	function queueRender(): void {
-		if (!map || !canvas || !stage || frameRequest !== 0) {
+		if (!map || !stage || frameRequest !== 0) {
 			return;
 		}
 
@@ -363,6 +434,34 @@
 
 	function updateLayer(layer: LayerToggleKey, checked: boolean): void {
 		layerState = { ...layerState, [layer]: checked };
+		queueRender();
+	}
+
+	function syncMapDragPan(): void {
+		if (!map) {
+			return;
+		}
+
+		if (renderMode === 'canvas') {
+			map.dragPan.enable();
+			return;
+		}
+
+		map.dragPan.disable();
+	}
+
+	function updateRenderMode(nextMode: RendererMode): void {
+		if (renderMode === nextMode) {
+			return;
+		}
+
+		renderMode = nextMode;
+		if (nextMode !== 'text') {
+			textStageActive = false;
+			spacePanPressed = false;
+			cancelPanPreview();
+		}
+		syncMapDragPan();
 		queueRender();
 	}
 
@@ -393,6 +492,200 @@
 		}
 
 		queueRender();
+	}
+
+	function canZoomIn(): boolean {
+		return Boolean(map && map.getZoom() < map.getMaxZoom() - 0.001);
+	}
+
+	function canZoomOut(): boolean {
+		return Boolean(map && map.getZoom() > map.getMinZoom() + 0.001);
+	}
+
+	function adjustTextModeZoom(delta: number): void {
+		if (renderMode !== 'text' || !map) {
+			return;
+		}
+
+		const nextZoom = Math.min(map.getMaxZoom(), Math.max(map.getMinZoom(), map.getZoom() + delta));
+		map.easeTo({
+			zoom: nextZoom,
+			duration: 180
+		});
+	}
+
+	function isInteractiveTarget(target: EventTarget | null): boolean {
+		return (
+			target instanceof HTMLElement &&
+			Boolean(
+				target.closest(
+					'input, textarea, select, button, a, [contenteditable="true"], [role="button"], [role="link"]'
+				)
+			)
+		);
+	}
+
+	function isStageKeyboardTarget(target: EventTarget | null): boolean {
+		return textStageActive && !isInteractiveTarget(target);
+	}
+
+	function selectTextGridContents(): void {
+		const textGrid = stage?.querySelector('.text-grid');
+		if (!(textGrid instanceof HTMLElement)) {
+			return;
+		}
+
+		const selection = window.getSelection();
+		if (!selection) {
+			return;
+		}
+
+		const range = document.createRange();
+		range.selectNodeContents(textGrid);
+		selection.removeAllRanges();
+		selection.addRange(range);
+	}
+
+	function resetPanPreview(): void {
+		panPreview = {
+			active: false,
+			offsetX: 0,
+			offsetY: 0,
+			pointerId: null,
+			startX: 0,
+			startY: 0
+		};
+	}
+
+	function commitPanPreview(): void {
+		if (!panPreview.active) {
+			return;
+		}
+
+		const { pointerId } = panPreview;
+		resetPanPreview();
+		if (pointerId !== null && stage?.hasPointerCapture(pointerId)) {
+			stage.releasePointerCapture(pointerId);
+		}
+	}
+
+	function cancelPanPreview(): void {
+		if (!panPreview.active) {
+			return;
+		}
+
+		const { pointerId } = panPreview;
+		resetPanPreview();
+		if (pointerId !== null && stage?.hasPointerCapture(pointerId)) {
+			stage.releasePointerCapture(pointerId);
+		}
+	}
+
+	function handleWindowKeyDown(event: KeyboardEvent): void {
+		if (
+			renderMode === 'text' &&
+			(event.metaKey || event.ctrlKey) &&
+			!event.altKey &&
+			event.key.toLowerCase() === 'a' &&
+			isStageKeyboardTarget(event.target)
+		) {
+			event.preventDefault();
+			selectTextGridContents();
+			return;
+		}
+
+		if (renderMode !== 'text' || event.code !== 'Space' || isInteractiveTarget(event.target)) {
+			return;
+		}
+
+		event.preventDefault();
+		spacePanPressed = true;
+	}
+
+	function handleWindowKeyUp(event: KeyboardEvent): void {
+		if (renderMode !== 'text' || event.code !== 'Space') {
+			return;
+		}
+
+		if (!isInteractiveTarget(event.target)) {
+			event.preventDefault();
+		}
+		spacePanPressed = false;
+		cancelPanPreview();
+	}
+
+	function handleWindowBlur(): void {
+		textStageActive = false;
+		spacePanPressed = false;
+		cancelPanPreview();
+	}
+
+	function handleWindowPointerDown(event: PointerEvent): void {
+		textStageActive =
+			renderMode === 'text' && stage instanceof HTMLElement && stage.contains(event.target as Node);
+	}
+
+	function handleStagePointerDown(event: PointerEvent): void {
+		if (renderMode === 'text') {
+			textStageActive = !isInteractiveTarget(event.target);
+		}
+
+		if (renderMode !== 'text' || !spacePanPressed || !map || event.button !== 0) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		stage?.setPointerCapture(event.pointerId);
+		panPreview = {
+			active: true,
+			offsetX: 0,
+			offsetY: 0,
+			pointerId: event.pointerId,
+			startX: event.clientX,
+			startY: event.clientY
+		};
+	}
+
+	function handleStagePointerMove(event: PointerEvent): void {
+		if (!panPreview.active || event.pointerId !== panPreview.pointerId || !map) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		const nextOffsetX = event.clientX - panPreview.startX;
+		const nextOffsetY = event.clientY - panPreview.startY;
+		const deltaX = nextOffsetX - panPreview.offsetX;
+		const deltaY = nextOffsetY - panPreview.offsetY;
+		if (deltaX !== 0 || deltaY !== 0) {
+			map.panBy([-deltaX, -deltaY], { animate: false });
+		}
+		panPreview = {
+			...panPreview,
+			offsetX: nextOffsetX,
+			offsetY: nextOffsetY
+		};
+	}
+
+	function handleStagePointerUp(event: PointerEvent): void {
+		if (!panPreview.active || event.pointerId !== panPreview.pointerId) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		commitPanPreview();
+	}
+
+	function handleStagePointerCancel(event: PointerEvent): void {
+		if (!panPreview.active || event.pointerId !== panPreview.pointerId) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		cancelPanPreview();
 	}
 
 	function stopAircraftPolling(): void {
@@ -428,16 +721,24 @@
 
 	function redrawCurrentView(): void {
 		if (frame) {
-			stampAircraftIntoFrame(frame);
-			if (!blitBaseFrame()) {
-				drawFrame(frame);
+			if (renderMode === 'canvas') {
+				stampAircraftIntoFrame(frame);
+				textDisplayFrame = null;
+				if (!blitBaseFrame()) {
+					drawFrame(frame);
+				}
+				drawAircraftGlyphs();
+				return;
 			}
-			drawAircraftGlyphs();
+
+			updateTextDisplayFrame(frame);
+			aircraftGlyphs = [];
 			return;
 		}
 
 		aircraftVisibleCount = 0;
 		aircraftGlyphs = [];
+		textDisplayFrame = null;
 	}
 
 	function animateAircraft(now: number): void {
@@ -487,6 +788,27 @@
 			return `Live (${formatRelativeTime(aircraftFetchedAt)})`;
 		}
 		return 'Waiting';
+	}
+
+	function projectAircraftMarkers(): ProjectedAircraftMarker[] {
+		if (!showAircraft || !map || aircraftTracks.size === 0) {
+			return [];
+		}
+
+		const displayedAircraft = resolveDisplayedAircraft(aircraftTracks.values(), Date.now());
+		if (displayedAircraft.length === 0) {
+			return [];
+		}
+
+		return displayedAircraft.map((aircraft) => {
+			const point = map!.project([aircraft.displayLongitude, aircraft.displayLatitude]);
+			return {
+				heading: aircraft.heading,
+				onGround: aircraft.onGround,
+				x: point.x,
+				y: point.y
+			};
+		});
 	}
 
 	function formatRelativeTime(timestamp: number): string {
@@ -745,36 +1067,31 @@
 	}
 
 	function stampAircraftIntoFrame(baseFrame: AsciiFrame): AsciiFrame {
-		if (!showAircraft || !map || aircraftTracks.size === 0) {
+		const markers = projectAircraftMarkers();
+		if (markers.length === 0) {
 			aircraftVisibleCount = 0;
 			aircraftGlyphs = [];
 			return baseFrame;
 		}
 
-		const displayedAircraft = resolveDisplayedAircraft(aircraftTracks.values(), Date.now());
-		if (displayedAircraft.length === 0) {
-			aircraftVisibleCount = 0;
-			aircraftGlyphs = [];
-			return baseFrame;
-		}
-
-		const markers = displayedAircraft.map((aircraft) => {
-			const point = map!.project([aircraft.displayLongitude, aircraft.displayLatitude]);
-			return {
-				heading: aircraft.heading,
-				x: point.x,
-				y: point.y,
-				onGround: aircraft.onGround
-			};
-		});
 		const stamped = stampAircraftGlyphs(baseFrame, markers, {
 			char: aircraftMarkerGlyph,
 			fontFamily: glyphFontFamily,
-			zoom: map.getZoom()
+			zoom: map?.getZoom() ?? INITIAL_VIEW.zoom
 		});
 		aircraftVisibleCount = stamped.visibleCount;
 		aircraftGlyphs = stamped.glyphs;
 		return stamped.frame;
+	}
+
+	function updateTextDisplayFrame(baseFrame: AsciiFrame): void {
+		const resolved = composeTextModeFrame(baseFrame, {
+			aircraft: projectAircraftMarkers(),
+			cityLabels: cityLabelCommands,
+			landmarkLabels: landmarkLabelCommands
+		});
+		aircraftVisibleCount = resolved.visibleAircraftCount;
+		textDisplayFrame = resolved.frame;
 	}
 
 	function resolveGlyphFontSize(
@@ -973,6 +1290,10 @@
 	}
 
 	function drawFrame(nextFrame: AsciiFrame): void {
+		if (!canvas) {
+			return;
+		}
+
 		drawFrameToCanvas(canvas, nextFrame, true);
 	}
 
@@ -1090,7 +1411,7 @@
 	}
 
 	function blitBaseFrame(): boolean {
-		if (!stage || !baseFrameCanvas) {
+		if (!stage || !baseFrameCanvas || !canvas) {
 			return false;
 		}
 
@@ -1185,7 +1506,7 @@
 	}
 
 	function renderFrame(): void {
-		if (!map || !stage || !canvas || !map.isStyleLoaded()) {
+		if (!map || !stage || !map.isStyleLoaded()) {
 			return;
 		}
 
@@ -1224,9 +1545,11 @@
 			}
 		});
 
-		nextFrame = applyProportionalTypography(nextFrame, {
-			waterDetail
-		});
+		if (renderMode === 'canvas') {
+			nextFrame = applyProportionalTypography(nextFrame, {
+				waterDetail
+			});
+		}
 		cityLabelCommands = cityLabelsVisibleAtZoom(mapZoom)
 			? resolveCityCommands(layers.cities ?? emptyFeatures, viewportWidth, viewportHeight)
 			: [];
@@ -1240,7 +1563,9 @@
 					)
 				: [];
 		frame = nextFrame;
-		renderBaseFrame(nextFrame);
+		if (renderMode === 'canvas') {
+			renderBaseFrame(nextFrame);
+		}
 		redrawCurrentView();
 
 		const now = performance.now();
@@ -1250,7 +1575,6 @@
 		}
 		lastRenderAt = now;
 	}
-
 	onMount(() => {
 		void (async () => {
 			try {
@@ -1266,6 +1590,7 @@
 					bearing: INITIAL_VIEW.bearing,
 					attributionControl: false
 				});
+				syncMapDragPan();
 
 				map.on('load', () => {
 					isLoaded = true;
@@ -1321,6 +1646,10 @@
 					onFontsReady?.();
 				});
 				document.fonts?.addEventListener?.('loadingdone', onFontsReady);
+				window.addEventListener('keydown', handleWindowKeyDown);
+				window.addEventListener('keyup', handleWindowKeyUp);
+				window.addEventListener('pointerdown', handleWindowPointerDown, true);
+				window.addEventListener('blur', handleWindowBlur);
 				aircraftUiTimer = window.setInterval(() => {
 					aircraftUiNow = Date.now();
 				}, 250);
@@ -1337,12 +1666,17 @@
 			}
 			stopAircraftPolling();
 			stopAircraftAnimation();
+			cancelPanPreview();
 			if (aircraftUiTimer !== undefined) {
 				window.clearInterval(aircraftUiTimer);
 			}
 			if (onFontsReady) {
 				document.fonts?.removeEventListener?.('loadingdone', onFontsReady);
 			}
+			window.removeEventListener('keydown', handleWindowKeyDown);
+			window.removeEventListener('keyup', handleWindowKeyUp);
+			window.removeEventListener('pointerdown', handleWindowPointerDown, true);
+			window.removeEventListener('blur', handleWindowBlur);
 			resizeObserver?.disconnect();
 			map?.remove();
 		};
@@ -1351,28 +1685,51 @@
 
 <section class="prototype-shell">
 	<div class="stage-wrap">
-		<div bind:this={stage} class="map-stage">
-			<div bind:this={mapHost} class:map-hidden={!showBackgroundMap} class="map-host"></div>
-			<canvas bind:this={canvas} class="ascii-canvas"></canvas>
-			<div class="scanlines" aria-hidden="true"></div>
-			<div class="label-overlay">
-				{#each cityLabelCommands as label (label.key)}
-					<span
-						class="map-label city-label"
-						style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
-					>
-						{label.name}
-					</span>
-				{/each}
-				{#each landmarkLabelCommands as label (label.key)}
-					<span
-						class="map-label landmark-label"
-						style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
-					>
-						{label.name}
-					</span>
-				{/each}
+		<div
+			bind:this={stage}
+			class="map-stage"
+			class:space-pan-ready={renderMode === 'text' && spacePanPressed}
+			class:space-panning={renderMode === 'text' && panPreview.active}
+			role="region"
+			aria-label={renderMode === 'text' ? 'ASCII map text' : 'ASCII map'}
+			onpointercancelcapture={handleStagePointerCancel}
+			onpointerdowncapture={handleStagePointerDown}
+			onpointermovecapture={handleStagePointerMove}
+			onpointerupcapture={handleStagePointerUp}
+		>
+			<div
+				class="render-stack"
+			>
+				<div bind:this={mapHost} class:map-hidden={!showBackgroundMap} class="map-host"></div>
+				{#if renderMode === 'canvas'}
+					<canvas bind:this={canvas} class="ascii-canvas"></canvas>
+					<div class="label-overlay">
+						{#each cityLabelCommands as label (label.key)}
+							<span
+								class="map-label city-label"
+								style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
+							>
+								{label.name}
+							</span>
+						{/each}
+						{#each landmarkLabelCommands as label (label.key)}
+							<span
+								class="map-label landmark-label"
+								style={`left:${label.x}px;top:${label.y}px;font:${label.font};opacity:${label.opacity};`}
+							>
+								{label.name}
+							</span>
+						{/each}
+					</div>
+				{:else}
+					<TextAsciiFrame
+						{entityColors}
+						frame={textDisplayFrame ?? frame}
+						{monoFontFamily}
+					/>
+				{/if}
 			</div>
+			<div class="scanlines" aria-hidden="true"></div>
 
 			{#if !isLoaded && !errorMessage}
 				<div class="status-card">Loading vector tiles and warming the ASCII overlay…</div>
@@ -1438,15 +1795,49 @@
 
 		<section class="panel-section">
 			<h2>Display</h2>
-			<label class="toggle-row">
-				<span>Background Map</span>
-				<input
-					type="checkbox"
-					checked={showBackgroundMap}
-					onchange={(event) =>
-						updateBackgroundMap((event.currentTarget as HTMLInputElement).checked)}
-				/>
-			</label>
+			<div class="display-stack">
+				<div class="segmented-row">
+					{#each rendererModeOptions as [value, label] (value)}
+						<button
+							type="button"
+							class:active={renderMode === value}
+							onclick={() => updateRenderMode(value)}
+						>
+							{label}
+						</button>
+					{/each}
+				</div>
+				{#if renderMode === 'text'}
+					<div class="display-zoom-row">
+						<button
+							type="button"
+							class="action-button"
+							disabled={!canZoomOut()}
+							onclick={() => adjustTextModeZoom(-1)}
+						>
+							Zoom Out
+						</button>
+						<button
+							type="button"
+							class="action-button"
+							disabled={!canZoomIn()}
+							onclick={() => adjustTextModeZoom(1)}
+						>
+							Zoom In
+						</button>
+					</div>
+					<p class="action-hint">Hold <kbd>Space</kbd> and drag inside the map to pan the view.</p>
+				{/if}
+				<label class="toggle-row">
+					<span>Background Map</span>
+					<input
+						type="checkbox"
+						checked={showBackgroundMap}
+						onchange={(event) =>
+							updateBackgroundMap((event.currentTarget as HTMLInputElement).checked)}
+					/>
+				</label>
+			</div>
 		</section>
 
 		<section class="panel-section">
@@ -1456,8 +1847,8 @@
 					<label class="toggle-row">
 						<span class="layer-copy">
 							<span class="layer-label">{LAYER_LABELS[layerKey]}</span>
-							<span class="layer-glyph" style={`--layer-color:${layerGlyphs[layerKey].color};`}>
-								{layerGlyphs[layerKey].glyph}
+							<span class="layer-glyph" style={`--layer-color:${currentLayerGlyphs()[layerKey].color};`}>
+								{currentLayerGlyphs()[layerKey].glyph}
 							</span>
 						</span>
 						<input
@@ -1471,8 +1862,8 @@
 				<label class="toggle-row">
 					<span class="layer-copy">
 						<span class="layer-label">Aircraft</span>
-						<span class="layer-glyph" style={`--layer-color:${layerGlyphs.aircraft.color};`}>
-							{layerGlyphs.aircraft.glyph}
+						<span class="layer-glyph" style={`--layer-color:${currentLayerGlyphs().aircraft.color};`}>
+							{currentLayerGlyphs().aircraft.glyph}
 						</span>
 					</span>
 					<input
@@ -1569,12 +1960,20 @@
 			<h2>Telemetry</h2>
 			<dl>
 				<div>
+					<dt>Render</dt>
+					<dd>{renderMode === 'canvas' ? 'Canvas' : 'Text'}</dd>
+				</div>
+				<div>
 					<dt>Mode</dt>
 					<dd>{currentQualityMode() === 'moving' ? 'Interaction grid' : 'Settled grid'}</dd>
 				</div>
 				<div>
+					<dt>Pan</dt>
+					<dd>{panPreview.active ? 'Previewing' : spacePanPressed ? 'Ready' : 'Hold Space'}</dd>
+				</div>
+				<div>
 					<dt>Glyphs</dt>
-					<dd>R/r · X/x · B/b · W/w · G/g · R/r · U/u · aAa + labels</dd>
+					<dd>{currentGlyphSummary()}</dd>
 				</div>
 				<div>
 					<dt>Road detail</dt>
@@ -1704,12 +2103,26 @@
 			inset 0 1px 0 rgba(255, 255, 255, 0.02);
 	}
 
+	.render-stack,
 	.map-host,
 	.ascii-canvas,
 	.scanlines,
 	.label-overlay {
 		position: absolute;
 		inset: 0;
+	}
+
+	.render-stack {
+		will-change: transform;
+	}
+
+	.map-stage.space-pan-ready {
+		cursor: grab;
+	}
+
+	.map-stage.space-panning {
+		cursor: grabbing;
+		user-select: none;
 	}
 
 	.map-host {
@@ -1885,6 +2298,17 @@
 
 	.panel-section h2 {
 		margin: 0 0 0.75rem;
+	}
+
+	.display-stack {
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.display-zoom-row {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
 	}
 
 	.toggle-grid {
@@ -2112,6 +2536,18 @@
 	.footnote {
 		margin: auto 0 0;
 		line-height: 1.6;
+	}
+
+	kbd {
+		display: inline-block;
+		padding: 0.08rem 0.34rem;
+		border: 1px solid rgba(144, 243, 213, 0.22);
+		border-radius: 0.35rem;
+		background: rgba(255, 255, 255, 0.05);
+		color: #edf7f2;
+		font-family: 'IBM Plex Mono', 'Courier New', monospace;
+		font-size: 0.78em;
+		line-height: 1.2;
 	}
 
 	:global(.maplibregl-ctrl-bottom-right),

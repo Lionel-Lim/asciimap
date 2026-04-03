@@ -15,6 +15,28 @@ https://github.com/user-attachments/assets/aab0f1fb-d16a-45c0-9003-873fa331fd2c
 
 Try the live demo at [https://lionel-lim.github.io/asciimap/](https://lionel-lim.github.io/asciimap/).
 
+## Rendering modes
+
+`asciimap` now supports two renderers:
+
+- `Canvas`: the original canvas-based ASCII renderer with proportional label and aircraft overlays.
+- `Text`: a native DOM text renderer using IBM Plex Mono, with selectable and copyable map output.
+
+Text mode keeps the map in plain text form instead of stretching glyphs to match the canvas renderer. City names, landmark names, and aircraft are stamped directly into the ASCII grid, so copied text includes the same labels and aircraft arrows shown on screen.
+
+Aircraft in text mode are rendered with 8-direction arrows:
+
+```text
+↑ ↗ → ↘ ↓ ↙ ← ↖
+```
+
+## Text mode controls
+
+- Drag normally to select text.
+- Hold `Space` and drag inside the map to pan the view.
+- Use the text-mode `Zoom In` and `Zoom Out` controls to adjust the map view.
+- After focusing the map, `Cmd/Ctrl+A` selects the map text instead of the whole page.
+
 ## Stack
 
 - SvelteKit (static build via `@sveltejs/adapter-static`)
